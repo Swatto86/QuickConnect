@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="blueGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00aaff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0066ff;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="screenGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a3a50;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0d1f2d;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Monitor body -->
+  <rect x="56" y="60" width="400" height="280" rx="20" ry="20" fill="url(#blueGrad)"/>
+
+  <!-- Screen -->
+  <rect x="76" y="80" width="360" height="240" rx="8" ry="8" fill="url(#screenGrad)"/>
+
+  <!-- Monitor stand neck -->
+  <rect x="216" y="340" width="80" height="60" fill="url(#blueGrad)"/>
+
+  <!-- Monitor stand base -->
+  <ellipse cx="256" cy="420" rx="120" ry="30" fill="url(#blueGrad)"/>
+
+  <!-- Connection arrows on screen -->
+  <!-- Left arrow pointing right -->
+  <g fill="#0088ff">
+    <!-- Left computer icon -->
+    <rect x="110" y="150" width="60" height="45" rx="4" ry="4" fill="#0088ff"/>
+    <rect x="130" y="195" width="20" height="10" fill="#0088ff"/>
+    <rect x="115" y="205" width="50" height="8" rx="2" ry="2" fill="#0088ff"/>
+
+    <!-- Right computer icon -->
+    <rect x="342" y="150" width="60" height="45" rx="4" ry="4" fill="#0088ff"/>
+    <rect x="362" y="195" width="20" height="10" fill="#0088ff"/>
+    <rect x="347" y="205" width="50" height="8" rx="2" ry="2" fill="#0088ff"/>
+
+    <!-- Connection arrow -->
+    <rect x="190" y="168" width="70" height="12" fill="#00aaff"/>
+    <polygon points="260,150 300,174 260,198" fill="#00aaff"/>
+
+    <!-- Bidirectional indicator dots -->
+    <circle cx="220" cy="200" r="6" fill="#00aaff" opacity="0.7"/>
+    <circle cx="245" cy="200" r="6" fill="#00aaff" opacity="0.85"/>
+    <circle cx="270" cy="200" r="6" fill="#00aaff"/>
+  </g>
+
+  <!-- Subtle glow effect on screen -->
+  <rect x="76" y="80" width="360" height="240" rx="8" ry="8" fill="none" stroke="#0088ff" stroke-width="2" opacity="0.3"/>
+</svg>

@@ -1,0 +1,122 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "QuickConnect",
+  "version": "1.2.0",
+  "identifier": "com.swatto.quickconnect",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "login",
+        "width": 400,
+        "height": 370,
+        "resizable": false,
+        "title": "QuickConnect",
+        "url": "index.html",
+        "transparent": true,
+        "decorations": true,
+        "visible": false,
+        "focus": true,
+        "skipTaskbar": false,
+        "alwaysOnTop": false,
+        "center": true
+      },
+      {
+        "label": "main",
+        "width": 800,
+        "height": 400,
+        "minWidth": 800,
+        "minHeight": 400,
+        "resizable": true,
+        "title": "QuickConnect",
+        "url": "main.html",
+        "transparent": false,
+        "decorations": true,
+        "visible": false,
+        "focus": true,
+        "skipTaskbar": false,
+        "alwaysOnTop": false,
+        "center": true
+      },
+      {
+        "label": "hosts",
+        "width": 800,
+        "height": 400,
+        "minWidth": 600,
+        "minHeight": 500,
+        "resizable": true,
+        "title": "QuickConnect",
+        "url": "hosts.html",
+        "transparent": false,
+        "decorations": true,
+        "visible": false,
+        "focus": true,
+        "skipTaskbar": false,
+        "alwaysOnTop": false,
+        "center": true
+      },
+      {
+        "label": "about",
+        "width": 420,
+        "height": 480,
+        "resizable": false,
+        "title": "About QuickConnect",
+        "url": "about.html",
+        "transparent": false,
+        "decorations": true,
+        "visible": false,
+        "focus": true,
+        "skipTaskbar": true,
+        "alwaysOnTop": true,
+        "center": true
+      },
+      {
+        "label": "error",
+        "width": 700,
+        "height": 500,
+        "minWidth": 500,
+        "minHeight": 400,
+        "resizable": true,
+        "title": "Errors - QuickConnect",
+        "url": "error.html",
+        "transparent": false,
+        "decorations": true,
+        "visible": false,
+        "focus": true,
+        "skipTaskbar": true,
+        "alwaysOnTop": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "Swatto",
+    "copyright": "Copyright © 2025 Swatto. All rights reserved.",
+    "category": "Utility",
+    "shortDescription": "Fast RDP connection manager for system administrators",
+    "longDescription": "QuickConnect is a fast and efficient RDP connection manager designed for Windows system administrators. It enables you to save, search, and connect to multiple Windows servers with secure credential storage.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      }
+    }
+  }
+}

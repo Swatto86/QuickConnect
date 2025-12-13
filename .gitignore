@@ -1,0 +1,110 @@
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Build outputs
+dist/
+dist-ssr/
+*.local
+
+# Vite cache and build artifacts
+.vite/
+.vite-inspect/
+vite.config.*.timestamp-*
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/Cargo.lock
+src-tauri/WixTools/
+
+# Generated files
+src-tauri/gen/
+
+# Tauri bundler and installer artifacts
+src-tauri/target/release/bundle/
+*.msi
+*.exe
+!src-tauri/icons/*.exe
+*.dmg
+*.deb
+*.rpm
+*.AppImage
+
+# WiX Toolset temporary files
+*.wixobj
+*.wixpdb
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swp
+*.swo
+*~
+
+# OS-specific files
+Thumbs.db
+.DS_Store
+desktop.ini
+ehthumbs.db
+
+# Logs
+*.log
+logs/
+
+# QuickConnect specific files
+src-tauri/hosts.csv
+*.rdp
+
+# Test coverage
+coverage/
+*.lcov
+.nyc_output/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Optional stylelint cache
+.stylelintcache
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Rust incremental compilation
+**/*.rs.bk
+incremental/
+
+# Debug output and crash dumps
+debug_output.txt
+*.pdb
+*.dmp
+
+# Lock files (optional - uncomment if you want to ignore them)
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+nul

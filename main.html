@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="stylesheet" href="/src/styles.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QuickConnect</title>
+  <script type="module" src="/src/main.ts" defer></script>
+</head>
+
+<body class="min-h-screen bg-base-100 text-base-content">
+  <main class="p-4 flex flex-col h-screen">
+    <!-- Header section -->
+    <div class="flex justify-between items-center mb-6">
+      <h1 class="text-2xl font-bold">Connect to a Server</h1>
+      <div class="flex items-center gap-2">
+        <button id="refreshStatus" tabindex="2" class="btn btn-ghost btn-circle" title="Refresh host status">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+        <button id="manageHosts" tabindex="3" class="btn btn-primary">
+          Manage Hosts
+        </button>
+      </div>
+    </div>
+
+    <!-- Search Box -->
+    <div class="mb-4">
+      <div class="relative">
+        <input type="text" id="search-input" tabindex="1" placeholder="Search hosts by name or description..."
+          maxlength="500" class="input input-bordered w-full" />
+      </div>
+    </div>
+
+    <!-- Server List - scrollable listbox -->
+    <div class="flex-1 bg-base-200 rounded-lg overflow-hidden mb-16">
+      <div id="server-list" class="h-full overflow-y-auto">
+        <p class="text-center text-base-content/60 p-4">Loading hosts...</p>
+      </div>
+    </div>
+
+    <!-- Footer with buttons -->
+    <div class="fixed bottom-0 left-0 right-0 h-16 bg-base-100 flex items-center px-4">
+      <button id="backToLogin" tabindex="4" class="btn btn-ghost btn-circle" title="Back to Login">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- Context Menu -->
+    <div id="contextMenu" class="hidden fixed bg-gray-800 border border-gray-700 rounded-lg shadow-lg py-2 w-48">
+      <ul>
+        <li class="px-4 py-2 hover:bg-gray-700 cursor-pointer">Connect RDP</li>
+        <li class="px-4 py-2 hover:bg-gray-700 cursor-pointer">Edit Server</li>
+        <li class="px-4 py-2 hover:bg-gray-700 cursor-pointer">Remove Server</li>
+      </ul>
+    </div>
+  </main>
+</body>
+
+</html>

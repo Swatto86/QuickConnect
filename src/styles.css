@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+dialog::backdrop {
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal-box {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  border-radius: 1rem; /* Adjust as needed */
+  padding: 2rem; /* Adjust as needed */
+}
+
+.modal-box h3 {
+  text-align: center;
+}
+
+.modal-action {
+  display: flex;
+  justify-content: space-between;
+}
+
+.btn-circle {
+  min-width: 6rem; /* Ensures a consistent width */
+  padding: 0.5rem 1rem; /* Adjust padding for better appearance */
+}
+
+#server-list {
+  position: relative;
+}
+
+#noHostsMessage {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  width: 100%;
+  pointer-events: none; /* Ensure clicks pass through */
+}
+
+/* Blue gradient for primary buttons and elements */
+.btn-primary {
+  background: linear-gradient(135deg, #003d7a 0%, #0066ff 50%, #0088ff 100%);
+  border: none;
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, #002d5a 0%, #0055cc 50%, #0077dd 100%);
+}
+
+.btn-primary:active {
+  background: linear-gradient(135deg, #002040 0%, #0044aa 50%, #0066bb 100%);
+}
+
+/* Improve disabled button visibility */
+.btn:disabled,
+.btn.opacity-50 {
+  opacity: 1 !important; /* Keep button fully visible */
+  filter: grayscale(50%); /* Make it look disabled with grayscale */
+  cursor: not-allowed;
+}
+
+/* Compact table styles */
+#hostsTable thead th {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+}
+
+#hostsTable tbody td {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.813rem;
+}

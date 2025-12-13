@@ -1,0 +1,6 @@
+# Custom site configuration - no remote theme
+title: "QuickConnect - Windows RDP Connection Manager"
+description: "A fast and secure Windows RDP connection manager with Active Directory integration. Built with Rust and Tauri. Features credential management, LDAP scanning, and one-click connections."
+author: "Swatto"
+url: "https://swatto.co.uk"
+keywords: "QuickConnect, RDP manager, Rust, Tauri, Windows, remote desktop, Active Directory, LDAP, credential manager, system administrator tools"

@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+
+<head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QuickConnect</title>
+    <script type="module" src="/src/hosts.ts" defer></script>
+</head>
+
+<body class="min-h-screen bg-base-100 text-base-content">
+    <main class="p-4 flex flex-col h-screen">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-2xl font-bold">Manage Server List</h1>
+            <div class="flex items-center gap-2">
+                <button id="deleteAllHosts" tabindex="4" class="btn btn-error">
+                    Delete All
+                </button>
+                <button id="scanDomain" tabindex="3" class="btn btn-primary">
+                    Scan Domain
+                </button>
+                <button id="addHost" tabindex="2" class="btn btn-accent">
+                    Add Host
+                </button>
+            </div>
+        </div>
+
+        <div id="server-list" class="bg-base-200 rounded-lg p-4 mb-16 overflow-y-auto flex-1 relative">
+            <div id="toastContainer" class="fixed top-4 right-4 z-50"></div>
+
+            <div class="mb-4">
+                <input type="text" id="hostSearch" tabindex="1" class="input input-bordered w-full max-w-xs"
+                    placeholder="Search hosts..." maxlength="500" />
+            </div>
+
+            <div id="noHostsMessage" class="hidden absolute inset-0 items-center justify-center text-gray-500">
+                No hosts found. Add one to get started.
+            </div>
+
+            <div id="hostsTableWrapper">
+                <table class="table w-full" id="hostsTable">
+                    <thead class="border-b border-base-300">
+                        <tr>
+                            <th class="text-center w-[25%]">
+                                Connection String
+                            </th>
+                            <th class="text-center w-[35%]">Description</th>
+                            <th class="text-center w-[20%]">
+                                Last Connected
+                            </th>
+                            <th class="text-center w-[20%]">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Table content will be populated by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="fixed bottom-0 left-0 right-0 h-16 bg-base-100 flex items-center px-4">
+            <button id="backToMain" tabindex="5" class="btn btn-ghost btn-circle" title="Back to Main">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24"
+                    stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                </svg>
+            </button>
+        </div>
+
+        <dialog id="hostModal" class="modal">
+            <div class="modal-backdrop bg-base-200 bg-opacity-50"></div>
+            <div class="modal-box max-w-2xl w-11/12 bg-base-100 shadow-xl p-8 rounded-2xl border border-base-300">
+                <h3 id="modalTitle" class="text-2xl font-bold mb-8 text-center">
+                    Edit Host
+                </h3>
+                <form id="hostForm" class="space-y-6" autocomplete="off">
+                    <div class="space-y-4">
+                        <label class="label">
+                            <span class="label-text text-base">RDP Hostname</span>
+                        </label>
+                        <input type="text" id="hostname" name="hostname" tabindex="1"
+                            class="input input-bordered w-full rounded-xl py-6" required autocomplete="off"
+                            maxlength="253" placeholder="server.domain.com" />
+                    </div>
+                    <div class="space-y-4 mb-6">
+                        <label class="label">
+                            <span class="label-text text-base">Description</span>
+                        </label>
+                        <textarea id="description" name="description" tabindex="2"
+                            class="textarea textarea-bordered w-full h-32 rounded-xl" autocomplete="off"
+                            maxlength="500"></textarea>
+                    </div>
+                    <div class="modal-action pt-4 flex justify-between">
+                        <button type="button" tabindex="4" class="btn btn-circle w-24" id="hostModalCancel">
+                            Cancel
+                        </button>
+                        <button type="submit" class="btn btn-primary rounded-xl w-24" tabindex="3">
+                            Save
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </dialog>
+
+        <dialog id="scanDomainModal" class="modal">
+            <div class="modal-backdrop bg-base-200 bg-opacity-50"></div>
+            <div class="modal-box bg-base-100 p-8 rounded-3xl min-w-[500px] max-w-[500px]">
+                <h3 class="text-2xl font-bold mb-8 text-center">
+                    Scan Domain
+                </h3>
+                <form id="scanDomainForm" autocomplete="off" class="space-y-6">
+                    <div class="form-control w-full mb-4">
+                        <label for="domainName" class="label">
+                            <span class="label-text text-lg">Domain Name</span>
+                        </label>
+                        <input type="text" id="domainName" name="domainName" tabindex="1"
+                            class="input input-bordered w-full h-14 rounded-2xl text-lg px-6" required
+                            placeholder="domain.com" maxlength="253"
+                            pattern="^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9](\.[a-zA-Z]{2,})+$"
+                            title="Please enter a valid domain name (e.g., domain.com)" />
+                    </div>
+                    <div class="form-control w-full mb-4">
+                        <label for="serverName" class="label">
+                            <span class="label-text text-lg">Domain Controller</span>
+                        </label>
+                        <input type="text" id="serverName" name="serverName" tabindex="2"
+                            class="input input-bordered w-full h-14 rounded-2xl text-lg px-6" required
+                            placeholder="dc01.domain.com" maxlength="253"
+                            title="Please enter a valid FQDN matching the domain above" />
+                    </div>
+                    <div class="modal-action pt-4 flex justify-between">
+                        <button type="button" tabindex="4" class="btn btn-circle w-24" id="scanDomainCancel">
+                            Cancel
+                        </button>
+                        <button type="submit" class="btn btn-primary btn-lg rounded-xl w-24" tabindex="3">
+                            Scan
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </dialog>
+
+        <dialog id="credentialsModal" class="modal">
+            <div class="modal-backdrop bg-base-200 bg-opacity-50"></div>
+            <div class="modal-box bg-base-100 p-8 rounded-3xl min-w-[500px] max-w-[500px]">
+                <h3 class="text-2xl font-bold mb-8 text-center">
+                    Edit Credentials
+                </h3>
+                <p id="credentialsHostname" class="text-lg mb-6 text-center"></p>
+                <form id="credentialsForm" autocomplete="off" class="space-y-6">
+                    <div class="form-control w-full mb-4">
+                        <label for="credUsername" class="label">
+                            <span class="label-text text-lg">Username</span>
+                        </label>
+                        <input type="text" id="credUsername" name="credUsername" tabindex="1"
+                            class="input input-bordered w-full h-14 rounded-2xl text-lg px-6" required
+                            maxlength="104" />
+                    </div>
+                    <div class="form-control w-full mb-4">
+                        <label for="credPassword" class="label">
+                            <span class="label-text text-lg">Password</span>
+                        </label>
+                        <input type="password" id="credPassword" name="credPassword" tabindex="2"
+                            class="input input-bordered w-full h-14 rounded-2xl text-lg px-6" required
+                            maxlength="256" />
+                    </div>
+                    <div class="modal-action pt-4 flex justify-between">
+                        <button type="button" tabindex="4" class="btn btn-circle w-24" id="credentialsModalCancel">
+                            Cancel
+                        </button>
+                        <button type="submit" class="btn btn-primary btn-lg rounded-xl w-24" tabindex="3">
+                            Save
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </dialog>
+    </main>
+</body>
+
+</html>

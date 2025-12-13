@@ -22,9 +22,9 @@ use std::path::Path;
 ///
 /// # CSV Format
 /// ```csv
-/// hostname,description
-/// server01.domain.com,Web Server
-/// server02.domain.com,Database Server
+/// hostname,description,last_connected
+/// server01.domain.com,Web Server,13/12/2025 14:30:00
+/// server02.domain.com,Database Server,
 /// ```
 pub fn write_hosts_to_csv(csv_path: &Path, hosts: &[Host]) -> Result<(), AppError> {
     use tracing::{debug, error};
@@ -49,8 +49,8 @@ pub fn write_hosts_to_csv(csv_path: &Path, hosts: &[Host]) -> Result<(), AppErro
             }
         })?;
 
-    // Write header
-    wtr.write_record(["hostname", "description"]).map_err(|e| {
+    // Write header (includes last_connected for v1.2.0+ compatibility)
+    wtr.write_record(["hostname", "description", "last_connected"]).map_err(|e| {
         error!(
             path = ?csv_path,
             error = %e,
@@ -62,21 +62,25 @@ pub fn write_hosts_to_csv(csv_path: &Path, hosts: &[Host]) -> Result<(), AppErro
         }
     })?;
 
-    // Write records
+    // Write records (includes last_connected timestamp)
     for host in hosts {
-        wtr.write_record([&host.hostname, &host.description])
-            .map_err(|e| {
-                error!(
-                    path = ?csv_path,
-                    hostname = %host.hostname,
-                    error = %e,
-                    "Failed to write CSV record"
-                );
-                AppError::IoError {
-                    path: csv_path.to_string_lossy().to_string(),
-                    source: std::io::Error::other(e),
-                }
-            })?;
+        wtr.write_record([
+            &host.hostname,
+            &host.description,
+            host.last_connected.as_deref().unwrap_or(""),
+        ])
+        .map_err(|e| {
+            error!(
+                path = ?csv_path,
+                hostname = %host.hostname,
+                error = %e,
+                "Failed to write CSV record"
+            );
+            AppError::IoError {
+                path: csv_path.to_string_lossy().to_string(),
+                source: std::io::Error::other(e),
+            }
+        })?;
     }
 
     wtr.flush().map_err(|e| {
@@ -142,7 +146,7 @@ mod tests {
         assert!(result.is_ok());
 
         let content = std::fs::read_to_string(&csv_path).unwrap();
-        assert_eq!(content.trim(), "hostname,description");
+        assert_eq!(content.trim(), "hostname,description,last_connected");
     }
 
     #[test]

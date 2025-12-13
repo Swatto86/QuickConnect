@@ -5,6 +5,9 @@
 
 pub mod credentials;
 pub mod hosts;
+pub mod system;
+pub mod theme;
+pub mod windows;
 
 // Re-export commands for easier registration
 pub use credentials::*;

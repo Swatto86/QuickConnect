@@ -19,17 +19,22 @@ use crate::core::Host;
 /// * `(domain, username)` tuple
 pub fn parse_username(username: &str) -> (String, String) {
     if username.contains('\\') {
-        // Format: DOMAIN\username
+        // Windows domain format: DOMAIN\username
+        // Common in Active Directory environments
         let parts: Vec<&str> = username.splitn(2, '\\').collect();
         if parts.len() == 2 {
+            // Successfully split into domain and username
             (parts[0].to_string(), parts[1].to_string())
         } else {
+            // Malformed input, treat as username only
             (String::new(), username.to_string())
         }
     } else if username.contains('@') {
-        // Format: username@domain.com
+        // User Principal Name (UPN) format: username@domain.com
+        // Modern Azure AD and Office 365 authentication format
         let parts: Vec<&str> = username.splitn(2, '@').collect();
         if parts.len() == 2 {
+            // Domain comes after @, username before
             (parts[1].to_string(), parts[0].to_string())
         } else {
             (String::new(), username.to_string())
@@ -51,7 +56,18 @@ pub fn parse_username(username: &str) -> (String, String) {
 ///
 /// # Returns
 /// * RDP file content as a string
+///
+/// # RDP File Format Notes
+/// - Uses Windows line endings (\r\n) as required by RDP protocol
+/// - Format: "key:type:value" where type is i (integer) or s (string)
+/// - Key settings:
+///   - screen mode id:i:2 = Fullscreen mode
+///   - keyboardhook:i:2 = Send keyboard commands to remote session
+///   - prompt for credentials:i:0 = Use saved credentials (no prompt)
+///   - enablecredsspsupport:i:1 = Enable CredSSP (Network Level Authentication)
+///   - cert ignore:i:1 = Accept untrusted certificates
 pub fn generate_rdp_content(host: &Host, username: &str, domain: &str) -> String {
+    // Generate RDP file content with key settings for seamless connection
     format!(
         "screen mode id:i:2\r\n\
 desktopwidth:i:1920\r\n\

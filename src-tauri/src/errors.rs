@@ -10,9 +10,16 @@ use thiserror::Error;
 ///
 /// All functions across command, core, and adapter layers should return this error type
 /// for consistent error handling and reporting.
+///
+/// # Architecture Notes
+/// - Uses thiserror for automatic Display and Error trait implementations
+/// - Each variant includes contextual information for debugging
+/// - #[source] attribute enables error chain traversal
+/// - Frontend-facing commands convert AppError to String for Tauri
 #[derive(Debug, Error)]
 pub enum AppError {
     /// Credentials not found in Windows Credential Manager
+    /// This is a normal case when no credentials are saved, not a true error
     #[error("Credentials not found for target: {target}")]
     CredentialsNotFound {
         target: String,

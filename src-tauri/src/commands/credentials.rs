@@ -7,7 +7,11 @@ use crate::{Credentials, StoredCredentials};
 use crate::adapters::{CredentialManager, WindowsCredentialManager};
 use crate::infra::debug_log;
 
-/// Global credential manager instance
+/// Global credential manager instance using singleton pattern
+/// 
+/// Uses once_cell::Lazy for thread-safe lazy initialization.
+/// The WindowsCredentialManager is created only once on first access
+/// and reused for all subsequent credential operations.
 static CREDENTIAL_MANAGER: once_cell::sync::Lazy<WindowsCredentialManager> =
     once_cell::sync::Lazy::new(|| WindowsCredentialManager::new());
 
@@ -67,6 +71,8 @@ pub async fn get_stored_credentials() -> Result<Option<StoredCredentials>, Strin
 
     match CREDENTIAL_MANAGER.read("QuickConnect") {
         Ok(Some((username, password))) => {
+            // SECURITY: Never log actual password, only metadata
+            // Log password length for debugging without exposing sensitive data
             debug_log(
                 "INFO",
                 "CREDENTIALS",
@@ -144,6 +150,9 @@ pub async fn save_host_credentials(
         return Err("Username cannot be empty".to_string());
     }
 
+    // TERMSRV/* naming convention enables Windows RDP Single Sign-On (SSO)
+    // The Windows RDP client automatically uses credentials stored under
+    // TERMSRV/{hostname} when connecting, eliminating manual login prompts
     let target = format!("TERMSRV/{}", hostname);
 
     CREDENTIAL_MANAGER
@@ -234,9 +243,12 @@ pub async fn delete_host_credentials(hostname: String) -> Result<(), String> {
 /// * Vector of hostnames that have saved credentials
 #[tauri::command]
 pub async fn list_hosts_with_credentials() -> Result<Vec<String>, String> {
+    // Query Windows Credential Manager for all credentials starting with "TERMSRV/"
+    // This prefix filter returns only per-host RDP credentials, excluding global ones
     match CREDENTIAL_MANAGER.list_with_prefix("TERMSRV/") {
         Ok(targets) => {
-            // Strip "TERMSRV/" prefix from each target
+            // Strip "TERMSRV/" prefix from each target to get just the hostname
+            // e.g., "TERMSRV/server1.example.com" -> "server1.example.com"
             let hostnames: Vec<String> = targets
                 .iter()
                 .filter_map(|t| t.strip_prefix("TERMSRV/").map(|s| s.to_string()))

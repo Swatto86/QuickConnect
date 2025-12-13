@@ -10,10 +10,15 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 /// Global flag indicating whether debug logging is enabled.
+/// 
+/// Uses Mutex for thread-safe access across the application.
+/// Logging is disabled by default and enabled via --debug flag.
 static DEBUG_MODE: Mutex<bool> = Mutex::new(false);
 
 /// Sets the debug mode flag
+/// Called early in application startup based on command-line arguments
 pub fn set_debug_mode(enabled: bool) {
+    // Acquire lock and update flag, ignoring lock errors
     if let Ok(mut flag) = DEBUG_MODE.lock() {
         *flag = enabled;
     }
@@ -34,13 +39,15 @@ pub fn debug_log(level: &str, category: &str, message: &str, error_details: Opti
     }
 
     // Use AppData\Roaming\QuickConnect for reliable write permissions
+    // This location works even when app is installed in Program Files (read-only)
     let log_file = if let Ok(appdata_dir) = std::env::var("APPDATA") {
         let quick_connect_dir = PathBuf::from(appdata_dir).join("QuickConnect");
-        // Create directory if it doesn't exist
+        // Ensure directory exists (idempotent operation)
         let _ = std::fs::create_dir_all(&quick_connect_dir);
         quick_connect_dir.join("QuickConnect_Debug.log")
     } else {
         // Fallback to current directory if APPDATA not available
+        // This should never happen on Windows, but provides safety
         PathBuf::from("QuickConnect_Debug.log")
     };
 
@@ -119,9 +126,14 @@ fn get_level_indicator(level: &str) -> &'static str {
     }
 }
 
+/// Adds category-specific contextual information to log entries
+/// 
+/// Enriches logs with relevant paths, settings, or configuration
+/// based on the operation being logged.
 fn add_category_context(log_entry: &mut String, category: &str) {
     match category {
         "RDP_LAUNCH" => {
+            // Add RDP temporary files location for troubleshooting
             if let Ok(appdata_dir) = std::env::var("APPDATA") {
                 let connections_dir = PathBuf::from(appdata_dir)
                     .join("QuickConnect")
@@ -130,9 +142,11 @@ fn add_category_context(log_entry: &mut String, category: &str) {
             }
         }
         "CREDENTIALS" => {
+            // Clarify credential storage mechanism
             log_entry.push_str("Credential Storage: Windows Credential Manager\n");
         }
         "LDAP_CONNECTION" | "LDAP_BIND" | "LDAP_SEARCH" => {
+            // Note standard LDAP port for network troubleshooting
             log_entry.push_str("LDAP Port: 389\n");
         }
         _ => {}

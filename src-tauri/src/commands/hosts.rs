@@ -99,10 +99,15 @@ pub fn get_hosts() -> Result<Vec<Host>, String> {
         .has_headers(true)
         .from_reader(contents.as_bytes());
 
+    // Parse each CSV record into a Host struct
+    // CSV format: hostname, description, last_connected (optional, added in v1.2.0)
     for result in reader.records() {
         match result {
             Ok(record) => {
+                // Minimum 2 columns required (hostname, description)
                 if record.len() >= 2 {
+                    // last_connected column is optional for backwards compatibility
+                    // with v1.1.0 CSV files that didn't have this column
                     let last_connected = if record.len() >= 3 && !record[2].is_empty() {
                         Some(record[2].to_string())
                     } else {
@@ -184,10 +189,13 @@ pub fn save_host(app_handle: tauri::AppHandle, host: Host) -> Result<(), String>
         return Err("Hostname cannot be empty".to_string());
     }
 
-    // Update or add the host
+    // Upsert logic: update existing host or add new one
+    // Hostname is the unique identifier for deduplication
     if let Some(idx) = hosts.iter().position(|h| h.hostname == host.hostname) {
+        // Update existing host (preserves last_connected if not changed)
         hosts[idx] = host;
     } else {
+        // Add new host to the end of the list
         hosts.push(host);
     }
 
@@ -310,6 +318,8 @@ pub async fn delete_all_hosts(app_handle: tauri::AppHandle) -> Result<(), String
 pub fn update_last_connected(hostname: &str) -> Result<(), String> {
     use chrono::Local;
 
+    // Generate timestamp in UK date format: DD/MM/YYYY HH:MM:SS
+    // This format is used consistently across the application
     let timestamp = Local::now().format("%d/%m/%Y %H:%M:%S").to_string();
 
     debug_log(
@@ -382,11 +392,13 @@ pub async fn check_host_status(hostname: String) -> Result<String, String> {
         None,
     );
 
-    // Try to resolve hostname first
+    // Resolve hostname to IP address for TCP connection
+    // Port 3389 is the standard RDP port
     let addr = format!("{}:3389", hostname);
     let socket_addrs: Vec<_> = match addr.to_socket_addrs() {
         Ok(addrs) => addrs.collect(),
         Err(e) => {
+            // DNS resolution failed - host doesn't exist or network issue
             debug_log(
                 "DEBUG",
                 "STATUS_CHECK",
@@ -408,6 +420,8 @@ pub async fn check_host_status(hostname: String) -> Result<String, String> {
     }
 
     // Attempt TCP connection with 2-second timeout
+    // This checks if port 3389 is open and accepting connections
+    // Timeout prevents UI from hanging on unreachable hosts
     let timeout = Duration::from_secs(2);
     match TcpStream::connect_timeout(&socket_addrs[0], timeout) {
         Ok(_) => {

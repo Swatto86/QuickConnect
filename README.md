@@ -253,12 +253,15 @@ QuickConnect.exe --debug
 
 Debug log is written to: `%APPDATA%\Roaming\QuickConnect\QuickConnect_Debug.log`
 
-The debug log includes:
+The debug log uses **structured logging** via the `tracing` crate, providing:
 - Human-readable timestamps for each event
+- Structured fields (category, details, path, error) for easy parsing
+- Thread IDs, file locations, and line numbers for precise debugging
 - Detailed error information with context
 - Category-specific troubleshooting steps
 - Operation traces (RDP connections, credential operations, LDAP queries, CSV operations, window lifecycle)
 - Structured log levels: ERROR (!), WARNING (*), INFO (i), DEBUG (d)
+- Configurable via `RUST_LOG` environment variable (defaults to INFO)
 
 ### Error Display
 Errors are displayed in a dedicated, always-on-top error window that:
@@ -300,6 +303,8 @@ Press **Ctrl+Shift+Alt+R** from any window (Login, Main, Hosts Management, or Ab
 - **Frontend**: Vite + TypeScript + Tailwind CSS + DaisyUI
 - **Backend**: Rust with Tauri 2.0
 - **Windows Integration**: Win32 APIs for credentials and RDP
+- **Logging**: Structured logging with `tracing` ecosystem (tracing, tracing-subscriber, tracing-appender)
+- **Data Processing**: Modular CSV writer with proper error handling and testing
 
 ### Platform Abstraction Strategy
 
@@ -436,8 +441,17 @@ QuickConnect/
 │   └── styles.css         # Global styles
 ├── src-tauri/             # Rust backend
 │   ├── src/
+│   │   ├── adapters/      # Platform-specific adapters (credentials, registry)
+│   │   ├── commands/      # Tauri command implementations
+│   │   ├── core/          # Core business logic
+│   │   │   ├── csv_writer.rs  # CSV file generation (3 tests)
+│   │   │   ├── ldap.rs    # Active Directory integration
+│   │   │   ├── rdp.rs     # RDP file generation
+│   │   │   └── types.rs   # Domain types
+│   │   ├── errors/        # Error handling (AppError)
+│   │   ├── infra/         # Infrastructure (logging with tracing)
 │   │   ├── main.rs        # Entry point
-│   │   └── lib.rs         # Core logic + tests (83 tests)
+│   │   └── lib.rs         # Application setup + tests (88 tests)
 │   ├── Cargo.toml         # Rust dependencies
 │   └── tauri.conf.json    # Tauri configuration
 ├── index.html             # Login window
@@ -510,7 +524,7 @@ cargo test
 ```
 
 **Test Coverage:**
-- **83 tests** in `src/lib.rs`
+- **91 tests** (88 in `src/lib.rs` + 3 in `src/core/csv_writer.rs`)
 - **18 CSV/JSON fuzzing tests** testing malformed file formats
 - Comprehensive corruption and edge case coverage
 
@@ -520,6 +534,7 @@ cargo test
 | `credentials_tests` | Credential serialization, UPN/domain formats |
 | `host_tests` | Host serialization, cloning, optional fields |
 | `host_validation_tests` | Hostname validation, whitespace handling |
+| `csv_writer::tests` | CSV file writing with hosts, empty lists, special characters |
 | `host_status_tests` | **Host status checking** (invalid hostnames, empty strings, malformed input, Unicode, null bytes, extreme lengths, concurrent execution, IPv6, unreachable hosts) |
 | `csv_json_fuzzing_tests` | **CSV/JSON corruption testing** (truncated lines, missing quotes, special chars, extremely long fields (10KB+), 5,000+ records, null bytes, BOM markers, mixed line endings, concurrent reads, malformed JSON, missing fields, truncated JSON, invalid UTF-8, duplicate keys, 10,000+ records, deeply nested structures, whitespace-only files) |
 | `error_payload_tests` | Error serialization, optional fields |
@@ -751,7 +766,7 @@ npm run tauri build
 **Current Implementation:** ✅ **9/10** - Strong compliance with comprehensive property-based testing
 
 **Test Coverage Summary:**
-- **Total Tests:** 730 tests (83 backend + 647 frontend)
+- **Total Tests:** 738 tests (91 backend + 647 frontend)
 - **Property-Based/Fuzz Tests:** 42 tests running 3,000+ random inputs
 - **CSV/JSON Corruption Tests:** 18 tests covering malformed file formats
 - **Code Coverage:** ~96% on utility modules
@@ -771,12 +786,16 @@ npm run tauri build
 - ⏳ **Integration tests with real artifacts** - Actual RDP files, real AD queries (requires test infrastructure)
 
 **Recent Improvements (v1.2.0+):**
+- **Structured Logging Migration**: Migrated to `tracing` ecosystem for enhanced observability with structured fields, thread tracking, and file/line precision
+- **CSV Writer Extraction**: Moved CSV writing from command layer to `core/csv_writer.rs` module with proper error handling and 3 comprehensive tests
+- **Error Handling Enhancement**: Eliminated last `unwrap_or_else` in production code with explicit `get_theme_or_default()` helper
 - Added 12 backend tests for `check_host_status` command
 - Added 12 frontend tests for `checkAllHostsStatus` function
 - Added 22 property-based validation fuzzing tests
 - Added 18 CSV/JSON corruption fuzzing tests
-- Increased total test count from 686 → 730 (+44 tests, 6.4% increase)
+- Increased total test count from 686 → 738 (+52 tests, 7.6% increase)
 - Property test coverage: 20 → 42 tests (110% increase)
+- Backend test coverage: 83 → 91 tests (+8 tests, 9.6% increase)
 
 ## License
 

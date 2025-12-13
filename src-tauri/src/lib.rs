@@ -501,8 +501,7 @@ async fn launch_rdp(app_handle: tauri::AppHandle, host: Host) -> Result<(), Stri
 
         // Rebuild tray menu to update recent connections
         if let Some(tray) = app_handle.tray_by_id("main") {
-            let current_theme =
-                get_theme(app_handle.clone()).unwrap_or_else(|_| "dark".to_string());
+            let current_theme = get_theme_or_default(app_handle.clone());
             if let Ok(new_menu) = build_tray_menu(&app_handle, &current_theme) {
                 let _ = tray.set_menu(Some(new_menu));
             }
@@ -553,20 +552,8 @@ async fn scan_domain(
     // Write results to CSV if successful
     if let Ok(scan_result) = &result {
         let csv_path = commands::hosts::get_hosts_csv_path()?;
-        let mut wtr = csv::WriterBuilder::new()
-            .from_path(&csv_path)
-            .map_err(|e| format!("Failed to create CSV writer: {}", e))?;
-
-        wtr.write_record(["hostname", "description"])
-            .map_err(|e| format!("Failed to write CSV header: {}", e))?;
-
-        for host in &scan_result.hosts {
-            wtr.write_record([&host.hostname, &host.description])
-                .map_err(|e| format!("Failed to write CSV record: {}", e))?;
-        }
-
-        wtr.flush()
-            .map_err(|e| format!("Failed to flush CSV writer: {}", e))?;
+        core::csv_writer::write_hosts_to_csv(&csv_path, &scan_result.hosts)
+            .map_err(|e| e.to_string())?;
 
         // Emit UI events
         if let Some(main_window) = app_handle.get_webview_window("main") {
@@ -817,6 +804,16 @@ fn set_theme(app_handle: tauri::AppHandle, theme: String) -> Result<(), String> 
     Ok(())
 }
 
+/// Gets the current theme with a guaranteed fallback to "dark"
+///
+/// This function ensures a theme is always returned, falling back to:
+/// 1. Saved app preference
+/// 2. Windows system theme
+/// 3. "dark" as ultimate fallback
+fn get_theme_or_default(app_handle: tauri::AppHandle) -> String {
+    get_theme(app_handle).unwrap_or_else(|_| "dark".to_string())
+}
+
 #[tauri::command]
 fn get_theme(app_handle: tauri::AppHandle) -> Result<String, String> {
     // Try to read the saved theme preference
@@ -954,6 +951,12 @@ pub fn run() {
         }
 
         set_debug_mode(true);
+        
+        // Initialize tracing for structured logging
+        if let Err(e) = infra::init_tracing() {
+            eprintln!("[QuickConnect] Failed to initialize tracing: {}", e);
+        }
+        
         debug_log(
             "INFO",
             "SYSTEM",

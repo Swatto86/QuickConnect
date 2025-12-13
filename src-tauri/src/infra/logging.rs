@@ -1,7 +1,7 @@
 //! Logging infrastructure for QuickConnect
 //!
-//! Provides a simple debug logging system that writes structured logs to a file
-//! when debug mode is enabled via command-line arguments.
+//! Provides structured logging using the tracing ecosystem with file output.
+//! Maintains backward compatibility with the legacy debug_log interface.
 
 use chrono::Local;
 use std::fs::OpenOptions;
@@ -24,7 +24,64 @@ pub fn set_debug_mode(enabled: bool) {
     }
 }
 
+/// Initializes the tracing subscriber for structured logging
+///
+/// Sets up tracing with file output to the same location as debug_log.
+/// Should be called once at application startup.
+///
+/// # Returns
+/// * `Ok(())` - Tracing initialized successfully
+/// * `Err(String)` - Failed to initialize tracing
+pub fn init_tracing() -> Result<(), String> {
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+    // Determine log file path (same as debug_log)
+    let log_dir = if let Ok(appdata_dir) = std::env::var("APPDATA") {
+        let quick_connect_dir = PathBuf::from(appdata_dir).join("QuickConnect");
+        std::fs::create_dir_all(&quick_connect_dir)
+            .map_err(|e| format!("Failed to create log directory: {}", e))?;
+        quick_connect_dir
+    } else {
+        PathBuf::from(".")
+    };
+
+    let log_file = log_dir.join("QuickConnect_Debug.log");
+
+    // Create file appender
+    let file_appender = tracing_appender::rolling::never(&log_dir, "QuickConnect_Debug.log");
+
+    // Configure formatting
+    let file_layer = fmt::layer()
+        .with_writer(file_appender)
+        .with_ansi(false) // No color codes in file
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_file(true)
+        .with_line_number(true);
+
+    // Set up subscriber with env filter
+    // Default to INFO level, can be overridden with RUST_LOG env var
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(file_layer)
+        .try_init()
+        .map_err(|e| format!("Failed to initialize tracing: {}", e))?;
+
+    tracing::info!(
+        log_file = ?log_file,
+        "Tracing initialized successfully"
+    );
+
+    Ok(())
+}
+
 /// Writes a debug log entry to the log file
+///
+/// Legacy function maintained for backward compatibility.
+/// Now delegates to tracing macros for structured logging.
 ///
 /// # Arguments
 /// * `level` - Log level: "INFO", "WARN", "ERROR", "DEBUG"
@@ -32,10 +89,21 @@ pub fn set_debug_mode(enabled: bool) {
 /// * `message` - The main log message
 /// * `error_details` - Optional additional details for debugging
 pub fn debug_log(level: &str, category: &str, message: &str, error_details: Option<&str>) {
+    use tracing::{debug, error, info, warn};
+
     let debug_enabled = DEBUG_MODE.lock().map(|flag| *flag).unwrap_or(false);
 
     if !debug_enabled {
         return;
+    }
+
+    // Emit structured tracing event
+    match level {
+        "ERROR" => error!(category = category, details = ?error_details, "{}", message),
+        "WARN" => warn!(category = category, details = ?error_details, "{}", message),
+        "INFO" => info!(category = category, details = ?error_details, "{}", message),
+        "DEBUG" => debug!(category = category, details = ?error_details, "{}", message),
+        _ => debug!(category = category, details = ?error_details, "{}", message),
     }
 
     // Use AppData\Roaming\QuickConnect for reliable write permissions

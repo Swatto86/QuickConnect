@@ -155,10 +155,16 @@ echo ====================================
 echo.
 if "%BUILD_MODE%"=="release" (
     echo Output files are in: src-tauri\target\release\bundle\
-    echo Installer location:
-    for %%f in (src-tauri\target\release\bundle\msi\*.msi) do (
-        echo   - %%f
+    echo.
+    echo Installers:
+    for %%f in (src-tauri\target\release\bundle\nsis\*.exe) do (
+        echo   NSIS: %%f
     )
+    for %%f in (src-tauri\target\release\bundle\msi\*.msi) do (
+        echo   MSI:  %%f
+    )
+    echo.
+    echo Executable: src-tauri\target\release\QuickConnect.exe
 ) else (
     echo Debug executable: src-tauri\target\debug\QuickConnect.exe
 )

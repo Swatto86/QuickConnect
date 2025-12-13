@@ -13,6 +13,8 @@
 //! - **Tauri commands**: Thin command layer exposing functionality to frontend
 //!
 //! ## Modules
+mod adapters;
+mod commands;
 mod core;
 mod errors;
 mod infra;
@@ -21,6 +23,10 @@ mod infra;
 pub use core::*;
 pub use errors::AppError;
 pub use infra::{debug_log, set_debug_mode};
+
+// Platform-specific adapters
+#[cfg(target_os = "windows")]
+pub use adapters::{CredentialManager, RegistryAdapter, WindowsCredentialManager, WindowsRegistry};
 
 // ## Platform Abstraction
 //
@@ -181,7 +187,7 @@ use tauri::{
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::FILETIME;
 use windows::Win32::Security::Credentials::{
-    CredDeleteW, CredEnumerateW, CredReadW, CredWriteW, CREDENTIALW, CRED_ENUMERATE_FLAGS,
+    CredDeleteW, CredEnumerateW, CredWriteW, CREDENTIALW, CRED_ENUMERATE_FLAGS,
     CRED_FLAGS, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
 };
 use windows::Win32::System::Registry::{
@@ -193,91 +199,7 @@ use windows::Win32::System::Registry::{
 /// Used by the system tray to restore the most recently hidden window.
 static LAST_HIDDEN_WINDOW: Mutex<String> = Mutex::new(String::new());
 
-/// Gets the QuickConnect application data directory.
-///
-/// Returns the path `%APPDATA%\Roaming\QuickConnect` and creates it if it doesn't exist.
-/// This directory is used for all application data storage (hosts.csv, logs, RDP files, etc.).
-///
-/// # Returns
-/// * `Ok(PathBuf)` - The QuickConnect directory path
-/// * `Err(String)` - If the APPDATA environment variable is not found or directory creation fails
-fn get_quick_connect_dir() -> Result<PathBuf, String> {
-    let appdata_dir =
-        std::env::var("APPDATA").map_err(|_| "Failed to get APPDATA directory".to_string())?;
-    let quick_connect_dir = PathBuf::from(appdata_dir).join("QuickConnect");
-    std::fs::create_dir_all(&quick_connect_dir)
-        .map_err(|e| format!("Failed to create QuickConnect directory: {}", e))?;
-    Ok(quick_connect_dir)
-}
 
-/// Gets the full path to the hosts CSV file.
-///
-/// Returns `%APPDATA%\Roaming\QuickConnect\hosts.csv` where host data is persisted.
-///
-/// # Returns
-/// * `Ok(PathBuf)` - The hosts.csv file path
-/// * `Err(String)` - If the QuickConnect directory cannot be accessed
-fn get_hosts_csv_path() -> Result<PathBuf, String> {
-    let quick_connect_dir = get_quick_connect_dir()?;
-    Ok(quick_connect_dir.join("hosts.csv"))
-}
-
-/// Migrates hosts.csv from old location (working directory) to new location (AppData).
-///
-/// This function was added in version 1.1.0 to move the hosts file from the application
-/// directory to the proper AppData location. It automatically runs once on startup.
-///
-/// # Migration Process
-/// 1. Checks if `hosts.csv` exists in the current working directory
-/// 2. Checks if `hosts.csv` already exists in AppData (skip if yes)
-/// 3. Copies the file to the new location
-/// 4. Deletes the old file after successful copy
-///
-/// All operations are logged for troubleshooting.
-fn migrate_hosts_csv_if_needed() {
-    // Check if there's an old hosts.csv in the current working directory
-    let old_path = std::path::Path::new("hosts.csv");
-
-    if old_path.exists() {
-        if let Ok(new_path) = get_hosts_csv_path() {
-            // Only migrate if the new location doesn't already exist
-            if !new_path.exists() {
-                if let Err(e) = std::fs::copy(old_path, &new_path) {
-                    debug_log(
-                        "ERROR",
-                        "MIGRATION",
-                        &format!("Failed to migrate hosts.csv to AppData: {}", e),
-                        None,
-                    );
-                } else {
-                    debug_log(
-                        "INFO",
-                        "MIGRATION",
-                        &format!("Successfully migrated hosts.csv to {}", new_path.display()),
-                        None,
-                    );
-
-                    // Optionally delete the old file after successful migration
-                    if let Err(e) = std::fs::remove_file(old_path) {
-                        debug_log(
-                            "WARN",
-                            "MIGRATION",
-                            &format!("Failed to delete old hosts.csv: {}", e),
-                            None,
-                        );
-                    }
-                }
-            } else {
-                debug_log(
-                    "INFO",
-                    "MIGRATION",
-                    "hosts.csv already exists in AppData, skipping migration",
-                    None,
-                );
-            }
-        }
-    }
-}
 
 /// Gets the full path to the recent connections JSON file.
 ///
@@ -287,7 +209,7 @@ fn migrate_hosts_csv_if_needed() {
 /// * `Ok(PathBuf)` - The recent connections file path
 /// * `Err(String)` - If the QuickConnect directory cannot be accessed
 fn get_recent_connections_file() -> Result<PathBuf, String> {
-    let quick_connect_dir = get_quick_connect_dir()?;
+    let quick_connect_dir = commands::hosts::get_quick_connect_dir()?;
     Ok(quick_connect_dir.join("recent_connections.json"))
 }
 
@@ -363,214 +285,7 @@ fn get_recent_connections() -> Result<Vec<RecentConnection>, String> {
 /// - Password is never logged (only password length is logged for debugging)
 /// - Uses CRED_PERSIST_LOCAL_MACHINE for machine-wide storage
 ///
-/// # Windows API Details
-/// This function uses the `CredWriteW` Win32 API with:
-/// - Type: CRED_TYPE_GENERIC
-/// - Password encoding: UTF-16 (matching Windows credential storage)
-/// - Target name: "QuickConnect"
-#[tauri::command]
-async fn save_credentials(credentials: Credentials) -> Result<(), String> {
-    debug_log(
-        "INFO",
-        "CREDENTIALS",
-        "Attempting to save credentials",
-        None,
-    );
 
-    if credentials.username.is_empty() {
-        let error = "Username cannot be empty";
-        debug_log(
-            "ERROR",
-            "CREDENTIALS",
-            error,
-            Some("Username parameter was empty"),
-        );
-        return Err(error.to_string());
-    }
-
-    unsafe {
-        // Convert strings to wide character format (UTF-16)
-        let target_name: Vec<u16> = OsStr::new("QuickConnect")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let username: Vec<u16> = OsStr::new(&credentials.username)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        // Password must be stored as UTF-16 wide string (matching how we retrieve it)
-        let password_wide: Vec<u16> = OsStr::new(&credentials.password)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let cred = CREDENTIALW {
-            Flags: CRED_FLAGS(0),
-            Type: CRED_TYPE_GENERIC,
-            TargetName: PWSTR(target_name.as_ptr() as *mut u16),
-            Comment: PWSTR::null(),
-            LastWritten: FILETIME::default(),
-            CredentialBlobSize: (password_wide.len() * 2) as u32, // Size in bytes, including null terminator
-            CredentialBlob: password_wide.as_ptr() as *mut u8,
-            Persist: CRED_PERSIST_LOCAL_MACHINE,
-            AttributeCount: 0,
-            Attributes: std::ptr::null_mut(),
-            TargetAlias: PWSTR::null(),
-            UserName: PWSTR(username.as_ptr() as *mut u16),
-        };
-
-        match CredWriteW(&cred, 0) {
-            Ok(_) => {
-                debug_log(
-                    "INFO",
-                    "CREDENTIALS",
-                    "Credentials saved successfully",
-                    None,
-                );
-                Ok(())
-            }
-            Err(e) => {
-                let error = format!("Failed to save credentials: {:?}", e);
-                debug_log(
-                    "ERROR",
-                    "CREDENTIALS",
-                    &error,
-                    Some(&format!("CredWriteW error: {:?}", e)),
-                );
-                Err(error)
-            }
-        }
-    }
-}
-
-#[tauri::command]
-async fn get_all_hosts() -> Result<Vec<Host>, String> {
-    get_hosts()
-}
-
-#[tauri::command]
-async fn search_hosts(query: String) -> Result<Vec<Host>, String> {
-    let hosts = get_hosts()?;
-    let query = query.to_lowercase();
-
-    let filtered_hosts: Vec<Host> = hosts
-        .into_iter()
-        .filter(|host| {
-            host.hostname.to_lowercase().contains(&query)
-                || host.description.to_lowercase().contains(&query)
-        })
-        .collect();
-
-    Ok(filtered_hosts)
-}
-
-#[tauri::command]
-async fn get_stored_credentials() -> Result<Option<StoredCredentials>, String> {
-    debug_log(
-        "INFO",
-        "CREDENTIALS",
-        "Attempting to retrieve stored credentials",
-        None,
-    );
-
-    unsafe {
-        let target_name: Vec<u16> = OsStr::new("QuickConnect")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let mut pcred = std::ptr::null_mut();
-
-        match CredReadW(
-            PCWSTR::from_raw(target_name.as_ptr()),
-            CRED_TYPE_GENERIC,
-            0,
-            &mut pcred,
-        ) {
-            Ok(_) => {
-                let cred = &*(pcred as *const CREDENTIALW);
-                let username = if !cred.UserName.is_null() {
-                    match PWSTR::from_raw(cred.UserName.0).to_string() {
-                        Ok(u) => u,
-                        Err(e) => {
-                            let error = format!("Failed to read username: {:?}", e);
-                            debug_log(
-                                "ERROR",
-                                "CREDENTIALS",
-                                &error,
-                                Some(&format!("Username decoding error: {:?}", e)),
-                            );
-                            return Err(error);
-                        }
-                    }
-                } else {
-                    String::new()
-                };
-
-                // Password is stored as UTF-16 wide string, so we need to decode it properly
-                let password_bytes = std::slice::from_raw_parts(
-                    cred.CredentialBlob,
-                    cred.CredentialBlobSize as usize,
-                );
-
-                // Convert bytes to u16 array for UTF-16 decoding
-                let password_wide: Vec<u16> = password_bytes
-                    .chunks_exact(2)
-                    .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-                    .collect();
-
-                // Decode UTF-16, removing the null terminator if present
-                let password = match String::from_utf16(&password_wide) {
-                    Ok(p) => p.trim_end_matches('\0').to_string(),
-                    Err(e) => {
-                        let error = format!("Failed to decode password from UTF-16: {:?}", e);
-                        debug_log(
-                            "ERROR",
-                            "CREDENTIALS",
-                            &error,
-                            Some(&format!("Password decoding error: {:?}", e)),
-                        );
-                        return Err(error);
-                    }
-                };
-
-                debug_log(
-                    "INFO",
-                    "CREDENTIALS",
-                    &format!(
-                        "Successfully retrieved stored credentials for user: {}",
-                        username
-                    ),
-                    Some(&format!("Password length: {} characters", password.len())),
-                );
-                Ok(Some(StoredCredentials { username, password }))
-            }
-            Err(e) => {
-                debug_log(
-                    "INFO",
-                    "CREDENTIALS",
-                    "No stored credentials found",
-                    Some(&format!("CredReadW returned error: {:?}", e)),
-                );
-                Ok(None)
-            }
-        }
-    }
-}
-
-#[tauri::command]
-async fn delete_credentials() -> Result<(), String> {
-    unsafe {
-        let target_name: Vec<u16> = OsStr::new("QuickConnect")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        CredDeleteW(PCWSTR::from_raw(target_name.as_ptr()), CRED_TYPE_GENERIC, 0)
-            .map_err(|e| format!("Failed to delete credentials: {:?}", e))?;
-    }
-    Ok(())
-}
 
 #[tauri::command]
 async fn toggle_visible_window(app_handle: tauri::AppHandle) -> Result<(), tauri::Error> {
@@ -743,243 +458,7 @@ async fn hide_hosts_window(app_handle: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-fn get_hosts() -> Result<Vec<Host>, String> {
-    debug_log("DEBUG", "CSV_OPERATIONS", "Reading hosts from CSV", None);
-    let path = get_hosts_csv_path()?;
-    if !path.exists() {
-        debug_log(
-            "INFO",
-            "CSV_OPERATIONS",
-            "hosts.csv does not exist, returning empty list",
-            None,
-        );
-        return Ok(Vec::new());
-    }
 
-    let contents =
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read CSV: {}", e))?;
-
-    let mut hosts = Vec::new();
-    let mut reader = csv::ReaderBuilder::new()
-        .has_headers(true)
-        .from_reader(contents.as_bytes());
-
-    for result in reader.records() {
-        match result {
-            Ok(record) => {
-                if record.len() >= 2 {
-                    let last_connected = if record.len() >= 3 && !record[2].is_empty() {
-                        Some(record[2].to_string())
-                    } else {
-                        None
-                    };
-                    hosts.push(Host {
-                        hostname: record[0].to_string(),
-                        description: record[1].to_string(),
-                        last_connected,
-                    });
-                }
-            }
-            Err(e) => return Err(format!("Failed to parse CSV record: {}", e)),
-        }
-    }
-
-    debug_log(
-        "DEBUG",
-        "CSV_OPERATIONS",
-        &format!("Successfully loaded {} hosts from CSV", hosts.len()),
-        None,
-    );
-    Ok(hosts)
-}
-
-#[tauri::command]
-fn save_host(app_handle: tauri::AppHandle, host: Host) -> Result<(), String> {
-    debug_log(
-        "INFO",
-        "CSV_OPERATIONS",
-        &format!("Saving host: {} - {}", host.hostname, host.description),
-        None,
-    );
-
-    // Create hosts.csv if it doesn't exist
-    let csv_path = get_hosts_csv_path()?;
-    if !csv_path.exists() {
-        let mut wtr = csv::WriterBuilder::new()
-            .from_path(&csv_path)
-            .map_err(|e| format!("Failed to create hosts.csv: {}", e))?;
-
-        wtr.write_record(["hostname", "description"])
-            .map_err(|e| format!("Failed to write CSV header: {}", e))?;
-
-        wtr.flush()
-            .map_err(|e| format!("Failed to flush CSV writer: {}", e))?;
-    }
-
-    let mut hosts = get_hosts()?;
-
-    // Check if hostname is empty or invalid
-    if host.hostname.trim().is_empty() {
-        return Err("Hostname cannot be empty".to_string());
-    }
-
-    // Update or add the host
-    if let Some(idx) = hosts.iter().position(|h| h.hostname == host.hostname) {
-        hosts[idx] = host;
-    } else {
-        hosts.push(host);
-    }
-
-    let csv_path = get_hosts_csv_path()?;
-    let mut wtr = csv::WriterBuilder::new()
-        .from_path(&csv_path)
-        .map_err(|e| format!("Failed to create CSV writer: {}", e))?;
-
-    // Write header
-    wtr.write_record(["hostname", "description", "last_connected"])
-        .map_err(|e| format!("Failed to write CSV header: {}", e))?;
-
-    // Write records
-    for host in hosts {
-        debug_log(
-            "DEBUG",
-            "CSV_OPERATIONS",
-            &format!(
-                "Writing host to CSV: {} - {}",
-                host.hostname, host.description
-            ),
-            None,
-        );
-        wtr.write_record([
-            &host.hostname,
-            &host.description,
-            &host.last_connected.unwrap_or_default(),
-        ])
-        .map_err(|e| format!("Failed to write CSV record: {}", e))?;
-    }
-
-    wtr.flush()
-        .map_err(|e| format!("Failed to flush CSV writer: {}", e))?;
-
-    // Emit event to notify all windows that hosts list has been updated
-    if let Some(main_window) = app_handle.get_webview_window("main") {
-        let _ = main_window.emit("hosts-updated", ());
-    }
-    if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
-        let _ = hosts_window.emit("hosts-updated", ());
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-fn delete_host(app_handle: tauri::AppHandle, hostname: String) -> Result<(), String> {
-    debug_log(
-        "INFO",
-        "CSV_OPERATIONS",
-        &format!("Deleting host: {}", hostname),
-        None,
-    );
-
-    let hosts: Vec<Host> = get_hosts()?
-        .into_iter()
-        .filter(|h| h.hostname != hostname)
-        .collect();
-
-    let csv_path = get_hosts_csv_path()?;
-    let mut wtr = csv::WriterBuilder::new()
-        .from_path(&csv_path)
-        .map_err(|e| format!("Failed to create CSV writer: {}", e))?;
-
-    // Write header
-    wtr.write_record(["hostname", "description", "last_connected"])
-        .map_err(|e| format!("Failed to write CSV header: {}", e))?;
-
-    // Write records
-    for host in hosts {
-        wtr.write_record([
-            &host.hostname,
-            &host.description,
-            &host.last_connected.unwrap_or_default(),
-        ])
-        .map_err(|e| format!("Failed to write CSV record: {}", e))?;
-    }
-
-    wtr.flush()
-        .map_err(|e| format!("Failed to flush CSV writer: {}", e))?;
-
-    // Emit event to notify all windows that hosts list has been updated
-    if let Some(main_window) = app_handle.get_webview_window("main") {
-        let _ = main_window.emit("hosts-updated", ());
-    }
-    if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
-        let _ = hosts_window.emit("hosts-updated", ());
-    }
-
-    Ok(())
-}
-
-fn update_last_connected(hostname: &str) -> Result<(), String> {
-    // Get current timestamp in UK format (DD/MM/YYYY HH:MM:SS)
-    use chrono::Local;
-
-    let timestamp = Local::now().format("%d/%m/%Y %H:%M:%S").to_string();
-
-    debug_log(
-        "INFO",
-        "TIMESTAMP_UPDATE",
-        &format!("Updating last connected for {} to {}", hostname, timestamp),
-        None,
-    );
-
-    // Read all hosts
-    let mut hosts = get_hosts()?;
-
-    // Find and update the host
-    let mut found = false;
-    for host in &mut hosts {
-        if host.hostname == hostname {
-            host.last_connected = Some(timestamp.clone());
-            found = true;
-            break;
-        }
-    }
-
-    if !found {
-        return Err(format!("Host {} not found in hosts list", hostname));
-    }
-
-    // Write back to CSV
-    let csv_path = get_hosts_csv_path()?;
-    let mut wtr = csv::WriterBuilder::new()
-        .from_path(&csv_path)
-        .map_err(|e| format!("Failed to create CSV writer: {}", e))?;
-
-    wtr.write_record(["hostname", "description", "last_connected"])
-        .map_err(|e| format!("Failed to write CSV header: {}", e))?;
-
-    for host in hosts {
-        wtr.write_record([
-            &host.hostname,
-            &host.description,
-            &host.last_connected.unwrap_or_default(),
-        ])
-        .map_err(|e| format!("Failed to write CSV record: {}", e))?;
-    }
-
-    wtr.flush()
-        .map_err(|e| format!("Failed to flush CSV writer: {}", e))?;
-
-    debug_log(
-        "INFO",
-        "TIMESTAMP_UPDATE",
-        &format!("Successfully updated last connected for {}", hostname),
-        None,
-    );
-
-    Ok(())
-}
 
 #[tauri::command]
 async fn launch_rdp(app_handle: tauri::AppHandle, host: Host) -> Result<(), String> {
@@ -991,7 +470,7 @@ async fn launch_rdp(app_handle: tauri::AppHandle, host: Host) -> Result<(), Stri
     );
 
     // First check for per-host credentials, fall back to global credentials
-    let credentials = match get_host_credentials(host.hostname.clone()).await? {
+    let credentials = match commands::get_host_credentials(host.hostname.clone()).await? {
         Some(creds) => {
             debug_log(
                 "INFO",
@@ -1011,7 +490,7 @@ async fn launch_rdp(app_handle: tauri::AppHandle, host: Host) -> Result<(), Stri
                 ),
                 None,
             );
-            match get_stored_credentials().await? {
+            match commands::get_stored_credentials().await? {
                 Some(creds) => creds,
                 None => {
                     let error =
@@ -1068,7 +547,7 @@ async fn launch_rdp(app_handle: tauri::AppHandle, host: Host) -> Result<(), Stri
 
     // If per-host credentials don't exist, we need to save the global credentials to TERMSRV/{hostname}
     // If per-host credentials exist, they're already saved at TERMSRV/{hostname}
-    if get_host_credentials(host.hostname.clone()).await?.is_none() {
+    if commands::get_host_credentials(host.hostname.clone()).await?.is_none() {
         debug_log(
             "INFO",
             "RDP_LAUNCH",
@@ -1312,7 +791,7 @@ disableconnectionsharing:i:0\r\n",
     }
 
     // Update last connected timestamp in hosts.csv
-    if let Err(e) = update_last_connected(&host.hostname) {
+    if let Err(e) = commands::hosts::update_last_connected(&host.hostname) {
         debug_log(
             "WARN",
             "RDP_LAUNCH",
@@ -1497,7 +976,7 @@ async fn scan_domain_ldap(
     );
 
     // Get stored credentials
-    let credentials = match get_stored_credentials().await {
+    let credentials = match commands::get_stored_credentials().await {
         Ok(Some(creds)) => {
             debug_log(
                 "INFO",
@@ -1696,7 +1175,7 @@ async fn scan_domain_ldap(
     );
 
     // Write to CSV file
-    let csv_path = get_hosts_csv_path()?;
+    let csv_path = commands::hosts::get_hosts_csv_path()?;
     let mut wtr = match csv::WriterBuilder::new().from_path(&csv_path) {
         Ok(writer) => writer,
         Err(e) => {
@@ -1775,275 +1254,7 @@ async fn scan_domain_ldap(
     ))
 }
 
-#[tauri::command]
-async fn save_host_credentials(host: Host, credentials: Credentials) -> Result<(), String> {
-    debug_log(
-        "INFO",
-        "HOST_CREDENTIALS",
-        &format!("Saving credentials for host: {}", host.hostname),
-        None,
-    );
 
-    // Parse username to extract just the username part (not DOMAIN\username)
-    let username = if credentials.username.contains('\\') {
-        let parts: Vec<&str> = credentials.username.splitn(2, '\\').collect();
-        if parts.len() == 2 {
-            parts[1].to_string()
-        } else {
-            credentials.username.clone()
-        }
-    } else if credentials.username.contains('@') {
-        let parts: Vec<&str> = credentials.username.splitn(2, '@').collect();
-        if parts.len() == 2 {
-            parts[0].to_string()
-        } else {
-            credentials.username.clone()
-        }
-    } else {
-        credentials.username.clone()
-    };
-
-    debug_log(
-        "INFO",
-        "HOST_CREDENTIALS",
-        &format!("Parsed username for TERMSRV: {}", username),
-        None,
-    );
-
-    unsafe {
-        let password_wide: Vec<u16> = OsStr::new(&credentials.password)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let target_name: Vec<u16> = OsStr::new(&format!("TERMSRV/{}", host.hostname))
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let username_wide: Vec<u16> = OsStr::new(&username)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let cred = CREDENTIALW {
-            Flags: CRED_FLAGS(0),
-            Type: CRED_TYPE_GENERIC,
-            TargetName: PWSTR(target_name.as_ptr() as *mut u16),
-            Comment: PWSTR::null(),
-            LastWritten: FILETIME::default(),
-            CredentialBlobSize: (password_wide.len() * 2) as u32, // Size in bytes, including null terminator
-            CredentialBlob: password_wide.as_ptr() as *mut u8,
-            Persist: CRED_PERSIST_LOCAL_MACHINE,
-            AttributeCount: 0,
-            Attributes: std::ptr::null_mut(),
-            TargetAlias: PWSTR::null(),
-            UserName: PWSTR(username_wide.as_ptr() as *mut u16),
-        };
-
-        match CredWriteW(&cred, 0) {
-            Ok(_) => {
-                debug_log(
-                    "INFO",
-                    "HOST_CREDENTIALS",
-                    &format!(
-                        "Successfully saved credentials for host: {} (username: {})",
-                        host.hostname, username
-                    ),
-                    None,
-                );
-                Ok(())
-            }
-            Err(e) => {
-                let error = format!(
-                    "Failed to save credentials for host {}: {:?}",
-                    host.hostname, e
-                );
-                debug_log(
-                    "ERROR",
-                    "HOST_CREDENTIALS",
-                    &error,
-                    Some(&format!("CredWriteW error: {:?}", e)),
-                );
-                Err(error)
-            }
-        }
-    }
-}
-
-#[tauri::command]
-async fn get_host_credentials(hostname: String) -> Result<Option<StoredCredentials>, String> {
-    debug_log(
-        "INFO",
-        "HOST_CREDENTIALS",
-        &format!("Retrieving credentials for host: {}", hostname),
-        None,
-    );
-
-    unsafe {
-        let target_name: Vec<u16> = OsStr::new(&format!("TERMSRV/{}", hostname))
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let mut pcred = std::ptr::null_mut();
-
-        match CredReadW(
-            PCWSTR::from_raw(target_name.as_ptr()),
-            CRED_TYPE_GENERIC,
-            0,
-            &mut pcred,
-        ) {
-            Ok(_) => {
-                let cred = &*(pcred as *const CREDENTIALW);
-                let username = if !cred.UserName.is_null() {
-                    PWSTR::from_raw(cred.UserName.0).to_string().map_err(|e| {
-                        debug_log(
-                            "ERROR",
-                            "HOST_CREDENTIALS",
-                            &format!("Failed to decode username for host {}", hostname),
-                            Some(&format!("Error: {:?}", e)),
-                        );
-                        format!("Failed to read username: {:?}", e)
-                    })?
-                } else {
-                    String::new()
-                };
-
-                // Password is stored as UTF-16 wide string, so we need to decode it properly
-                let password_bytes = std::slice::from_raw_parts(
-                    cred.CredentialBlob,
-                    cred.CredentialBlobSize as usize,
-                );
-
-                // Convert bytes to u16 array for UTF-16 decoding
-                let password_wide: Vec<u16> = password_bytes
-                    .chunks_exact(2)
-                    .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-                    .collect();
-
-                // Decode UTF-16, removing the null terminator if present
-                let password = String::from_utf16(&password_wide)
-                    .map_err(|e| {
-                        debug_log(
-                            "ERROR",
-                            "HOST_CREDENTIALS",
-                            &format!("Failed to decode password for host {}", hostname),
-                            Some(&format!("UTF-16 decode error: {:?}", e)),
-                        );
-                        format!("Failed to decode password from UTF-16: {:?}", e)
-                    })?
-                    .trim_end_matches('\0')
-                    .to_string();
-
-                debug_log("INFO", "HOST_CREDENTIALS", &format!("Successfully retrieved credentials for host: {} (username: {}, password_len: {})", hostname, username, password.len()), None);
-                Ok(Some(StoredCredentials { username, password }))
-            }
-            Err(_) => {
-                debug_log(
-                    "INFO",
-                    "HOST_CREDENTIALS",
-                    &format!("No stored credentials found for host: {}", hostname),
-                    None,
-                );
-                Ok(None)
-            }
-        }
-    }
-}
-
-#[tauri::command]
-async fn delete_all_hosts(app_handle: tauri::AppHandle) -> Result<(), String> {
-    // Create empty file to clear all contents
-    let csv_path = get_hosts_csv_path()?;
-    std::fs::write(&csv_path, "hostname,description\n")
-        .map_err(|e| format!("Failed to clear hosts file: {}", e))?;
-
-    // Emit event to notify all windows that hosts list has been updated
-    if let Some(main_window) = app_handle.get_webview_window("main") {
-        let _ = main_window.emit("hosts-updated", ());
-    }
-    if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
-        let _ = hosts_window.emit("hosts-updated", ());
-    }
-
-    Ok(())
-}
-
-/// Checks if a host is online by attempting to connect to RDP port 3389
-///
-/// # Arguments
-/// * `hostname` - The FQDN of the host to check
-///
-/// # Returns
-/// * `"online"` - Successfully connected to port 3389
-/// * `"offline"` - Connection timed out or refused
-/// * `"unknown"` - Invalid hostname or other error
-///
-/// # Example Usage (from JavaScript)
-/// ```javascript
-/// const status = await invoke('check_host_status', { hostname: 'server01.domain.com' });
-/// // Returns "online", "offline", or "unknown"
-/// ```
-#[tauri::command]
-async fn check_host_status(hostname: String) -> Result<String, String> {
-    use std::net::{TcpStream, ToSocketAddrs};
-    use std::time::Duration;
-
-    debug_log(
-        "DEBUG",
-        "STATUS_CHECK",
-        &format!("Checking status for host: {}", hostname),
-        None,
-    );
-
-    // Try to resolve hostname first
-    let addr = format!("{}:3389", hostname);
-    let socket_addrs: Vec<_> = match addr.to_socket_addrs() {
-        Ok(addrs) => addrs.collect(),
-        Err(e) => {
-            debug_log(
-                "DEBUG",
-                "STATUS_CHECK",
-                &format!("Failed to resolve hostname {}: {}", hostname, e),
-                Some(&e.to_string()),
-            );
-            return Ok("unknown".to_string());
-        }
-    };
-
-    if socket_addrs.is_empty() {
-        debug_log(
-            "DEBUG",
-            "STATUS_CHECK",
-            &format!("No addresses resolved for hostname: {}", hostname),
-            None,
-        );
-        return Ok("unknown".to_string());
-    }
-
-    // Attempt TCP connection with 2-second timeout
-    let timeout = Duration::from_secs(2);
-    match TcpStream::connect_timeout(&socket_addrs[0], timeout) {
-        Ok(_) => {
-            debug_log(
-                "DEBUG",
-                "STATUS_CHECK",
-                &format!("Host {} is online (port 3389 open)", hostname),
-                None,
-            );
-            Ok("online".to_string())
-        }
-        Err(e) => {
-            debug_log(
-                "DEBUG",
-                "STATUS_CHECK",
-                &format!("Host {} is offline or unreachable: {}", hostname, e),
-                Some(&e.to_string()),
-            );
-            Ok("offline".to_string())
-        }
-    }
-}
 
 #[tauri::command]
 async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, String> {
@@ -2057,7 +1268,7 @@ async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, Strin
     let mut report = String::from("=== QuickConnect Application Reset ===\n\n");
 
     // 1. Delete all QuickConnect credentials
-    match delete_credentials().await {
+    match commands::delete_credentials().await {
         Ok(_) => {
             report.push_str("✓ Deleted global QuickConnect credentials\n");
             debug_log("INFO", "RESET", "Deleted global credentials", None);
@@ -2217,7 +1428,7 @@ async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, Strin
     }
 
     // 4. Delete hosts.csv
-    match delete_all_hosts(app_handle).await {
+    match commands::delete_all_hosts(app_handle).await {
         Ok(_) => {
             report.push_str("\n✓ Cleared hosts.csv\n");
             debug_log("INFO", "RESET", "Cleared hosts.csv", None);
@@ -2725,7 +1936,7 @@ pub fn run() {
             }
 
             // Migrate hosts.csv from old location to AppData if needed
-            migrate_hosts_csv_if_needed();
+            commands::hosts::migrate_hosts_csv_if_needed();
 
             // Initialize the LAST_HIDDEN_WINDOW
             if let Ok(mut last_hidden) = LAST_HIDDEN_WINDOW.lock() {
@@ -2934,7 +2145,7 @@ pub fn run() {
                             let app_clone = app.clone();
                             tauri::async_runtime::spawn(async move {
                                 // Try to get host from hosts list
-                                match get_hosts() {
+                                match commands::hosts::get_hosts() {
                                     Ok(hosts) => {
                                         if let Some(host) =
                                             hosts.into_iter().find(|h| h.hostname == hostname)
@@ -3177,13 +2388,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // Window management
             quit_app,
             show_about,
             show_error,
             toggle_error_window,
-            save_credentials,
-            get_stored_credentials,
-            delete_credentials,
             toggle_visible_window,
             close_login_window,
             close_login_and_prepare_main,
@@ -3192,25 +2401,35 @@ pub fn run() {
             switch_to_main_window,
             hide_main_window,
             show_hosts_window,
-            get_hosts,
-            get_all_hosts,
-            save_host,
-            delete_host,
             hide_hosts_window,
-            search_hosts,
+            // Credentials (from commands module)
+            commands::save_credentials,
+            commands::get_stored_credentials,
+            commands::delete_credentials,
+            commands::save_host_credentials,
+            commands::get_host_credentials,
+            commands::delete_host_credentials,
+            commands::list_hosts_with_credentials,
+            // Hosts (from commands module)
+            commands::get_hosts,
+            commands::get_all_hosts,
+            commands::save_host,
+            commands::delete_host,
+            commands::search_hosts,
+            commands::delete_all_hosts,
+            commands::check_host_status,
+            // RDP
             launch_rdp,
+            get_recent_connections,
+            // LDAP
             scan_domain,
-            save_host_credentials,
-            get_host_credentials,
-            delete_all_hosts,
-            check_host_status,
+            // System
             reset_application,
             check_autostart,
             toggle_autostart,
             get_windows_theme,
             set_theme,
             get_theme,
-            get_recent_connections,
         ])
         .run(tauri::generate_context!())
         .map_err(|e| eprintln!("Error while running tauri application: {:?}", e))
@@ -3560,8 +2779,8 @@ mod tests {
         #[test]
         fn test_hosts_csv_path_format() {
             // This test verifies the path format, not the actual directory
-            // Since get_hosts_csv_path() depends on APPDATA, we test the logic
-            let result = get_hosts_csv_path();
+            // Since commands::hosts::get_hosts_csv_path() depends on APPDATA, we test the logic
+            let result = commands::hosts::get_hosts_csv_path();
             if let Ok(path) = result {
                 assert!(path.ends_with("hosts.csv"));
                 assert!(path.to_string_lossy().contains("QuickConnect"));
@@ -4066,7 +3285,7 @@ mod tests {
         fn test_check_host_status_invalid_hostname_returns_unknown() {
             // Test with completely invalid hostname (no dots, special chars)
             let rt = Runtime::new().unwrap();
-            let result = rt.block_on(check_host_status("!!!invalid!!!".to_string()));
+            let result = rt.block_on(commands::check_host_status("!!!invalid!!!".to_string()));
             assert!(result.is_ok());
             assert_eq!(result.unwrap(), "unknown");
         }
@@ -4075,7 +3294,7 @@ mod tests {
         fn test_check_host_status_empty_hostname() {
             // Test with empty hostname - returns offline (connection refused on empty string:3389)
             let rt = Runtime::new().unwrap();
-            let result = rt.block_on(check_host_status("".to_string()));
+            let result = rt.block_on(commands::check_host_status("".to_string()));
             assert!(result.is_ok());
             // Empty hostname resolves but connection fails
             assert_eq!(result.unwrap(), "offline");
@@ -4085,7 +3304,7 @@ mod tests {
         fn test_check_host_status_malformed_hostname_returns_unknown() {
             // Test with hostname that can't be resolved
             let rt = Runtime::new().unwrap();
-            let result = rt.block_on(check_host_status("nonexistent.invalid.test.local".to_string()));
+            let result = rt.block_on(commands::check_host_status("nonexistent.invalid.test.local".to_string()));
             assert!(result.is_ok());
             assert_eq!(result.unwrap(), "unknown");
         }
@@ -4095,7 +3314,7 @@ mod tests {
             // Test with valid hostname format but unreachable host
             // Using a reserved IP that should timeout/fail
             let rt = Runtime::new().unwrap();
-            let result = rt.block_on(check_host_status("192.0.2.1".to_string())); // TEST-NET-1 (RFC 5737)
+            let result = rt.block_on(commands::check_host_status("192.0.2.1".to_string())); // TEST-NET-1 (RFC 5737)
             assert!(result.is_ok());
             let status = result.unwrap();
             // Should be offline (connection timeout/refused)
@@ -4106,7 +3325,7 @@ mod tests {
         fn test_check_host_status_localhost_may_vary() {
             // Test with localhost - result depends on whether RDP is running
             let rt = Runtime::new().unwrap();
-            let result = rt.block_on(check_host_status("127.0.0.1".to_string()));
+            let result = rt.block_on(commands::check_host_status("127.0.0.1".to_string()));
             assert!(result.is_ok());
             let status = result.unwrap();
             // Status can be online, offline, or unknown depending on system
@@ -4117,7 +3336,7 @@ mod tests {
         fn test_check_host_status_with_spaces_returns_unknown() {
             // Test with hostname containing spaces (invalid)
             let rt = Runtime::new().unwrap();
-            let result = rt.block_on(check_host_status("server with spaces.com".to_string()));
+            let result = rt.block_on(commands::check_host_status("server with spaces.com".to_string()));
             assert!(result.is_ok());
             assert_eq!(result.unwrap(), "unknown");
         }
@@ -4126,7 +3345,7 @@ mod tests {
         fn test_check_host_status_with_unicode_returns_unknown() {
             // Test with Unicode characters in hostname
             let rt = Runtime::new().unwrap();
-            let result = rt.block_on(check_host_status("服务器.domain.com".to_string()));
+            let result = rt.block_on(commands::check_host_status("服务器.domain.com".to_string()));
             assert!(result.is_ok());
             // May return unknown due to DNS resolution failure
             let status = result.unwrap();
@@ -4138,7 +3357,7 @@ mod tests {
             // Test with extremely long hostname (exceeds DNS limits)
             let long_hostname = "a".repeat(300) + ".domain.com";
             let rt = Runtime::new().unwrap();
-            let result = rt.block_on(check_host_status(long_hostname));
+            let result = rt.block_on(commands::check_host_status(long_hostname));
             assert!(result.is_ok());
             assert_eq!(result.unwrap(), "unknown");
         }
@@ -4147,7 +3366,7 @@ mod tests {
         fn test_check_host_status_null_byte_in_hostname() {
             // Test with null byte (should be handled safely)
             let rt = Runtime::new().unwrap();
-            let result = rt.block_on(check_host_status("server\0.domain.com".to_string()));
+            let result = rt.block_on(commands::check_host_status("server\0.domain.com".to_string()));
             assert!(result.is_ok());
             assert_eq!(result.unwrap(), "unknown");
         }
@@ -4164,7 +3383,7 @@ mod tests {
 
             let mut handles = vec![];
             for host in hosts {
-                let handle = rt.spawn(async move { check_host_status(host).await });
+                let handle = rt.spawn(async move { commands::check_host_status(host).await });
                 handles.push(handle);
             }
 
@@ -4180,7 +3399,7 @@ mod tests {
         fn test_check_host_status_ipv6_localhost() {
             // Test with IPv6 localhost
             let rt = Runtime::new().unwrap();
-            let result = rt.block_on(check_host_status("::1".to_string()));
+            let result = rt.block_on(commands::check_host_status("::1".to_string()));
             assert!(result.is_ok());
             let status = result.unwrap();
             // Status depends on whether RDP is running on IPv6
@@ -4191,7 +3410,7 @@ mod tests {
         fn test_check_host_status_returns_result_not_error() {
             // Verify function returns Result, not panic
             let rt = Runtime::new().unwrap();
-            let result = rt.block_on(check_host_status("invalid".to_string()));
+            let result = rt.block_on(commands::check_host_status("invalid".to_string()));
             // Should always return Ok, never Err
             assert!(result.is_ok());
         }

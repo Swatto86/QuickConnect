@@ -5,49 +5,41 @@
 //!
 //! ## Architecture
 //!
-//! The library is structured around Tauri commands that expose Windows-specific functionality
-//! to the frontend:
+//! The library is organized into modular components:
 //!
-//! - **Window Management**: Control application windows (login, main, hosts, error, about)
-//! - **Credential Management**: Secure storage using Windows Credential Manager
-//! - **Host Management**: CRUD operations for RDP hosts (stored in CSV)
-//! - **RDP Connection**: Launch and manage RDP sessions with credential integration
-//! - **LDAP/Active Directory**: Scan domains for Windows servers
-//! - **System Integration**: Autostart, system tray, theme management
-//! - **Logging**: Comprehensive debug logging to file
+//! - **core**: Domain types and business logic
+//! - **errors**: Unified error handling with AppError
+//! - **infra**: Infrastructure concerns (logging, persistence, configuration)
+//! - **Tauri commands**: Thin command layer exposing functionality to frontend
 //!
-//! ## Platform Abstraction
-//!
-//! While currently Windows-specific, the code is structured to facilitate future cross-platform
-//! support:
-//! - All Windows API calls are isolated to specific functions (credential storage, registry access)
-//! - Core business logic (CSV parsing, host filtering, data serialization) is platform-agnostic
-//! - Tauri commands act as an abstraction layer between frontend and backend
-//!
-//! ## Security Considerations
-//!
-//! - Passwords are stored securely in Windows Credential Manager (encrypted by OS)
-//! - Passwords are never logged (debug logs only show password length)
-//! - RDP credentials are stored per-host using TERMSRV/* naming convention
-//! - Input validation prevents malformed hostnames and credentials
-//!
-//! ## Error Handling
-//!
-//! - All Tauri commands return `Result<T, String>` for consistent error propagation
-//! - Errors are logged comprehensively with category and context
-//! - Frontend receives user-friendly error messages
-//! - Dedicated error window displays all errors with timestamps
-//!
-//! ## Testing
-//!
-//! The library includes 53 unit tests covering:
-//! - Data serialization (credentials, hosts, errors, recent connections)
-//! - CSV and JSON file operations
-//! - Search and filter logic
-//! - Username parsing (UPN, NetBIOS, domain\user formats)
-//! - Validation logic
-//!
-//! Run tests with: `cargo test`
+//! ## Modules
+mod core;
+mod errors;
+mod infra;
+
+// Re-export commonly used types
+pub use core::*;
+pub use errors::AppError;
+pub use infra::{debug_log, set_debug_mode};
+
+// ## Platform Abstraction
+//
+// While currently Windows-specific, the code is structured to facilitate future cross-platform
+// support:
+// - Windows API calls are isolated to specific functions
+// - Core business logic is platform-agnostic
+// - Tauri commands act as an abstraction layer
+//
+// ## Security Considerations
+//
+// - Passwords are stored securely in Windows Credential Manager (encrypted by OS)
+// - Passwords are never logged (debug logs only show password length)
+// - RDP credentials are stored per-host using TERMSRV/* naming convention
+// - Input validation prevents malformed hostnames and credentials
+//
+// ## Testing
+//
+// Run tests with: `cargo test`
 
 /// Tauri command to exit the application gracefully.
 ///
@@ -81,22 +73,6 @@ fn show_about(app_handle: tauri::AppHandle) -> Result<(), String> {
     } else {
         Err("About window not found".to_string())
     }
-}
-
-/// Payload structure for error messages sent to the error window.
-///
-/// This structure is serialized and emitted as an event to the error window frontend,
-/// allowing comprehensive error tracking with full context.
-#[derive(Clone, serde::Serialize)]
-struct ErrorPayload {
-    /// The main error message (user-friendly)
-    message: String,
-    /// ISO 8601 formatted timestamp
-    timestamp: String,
-    /// Optional category for error classification (e.g., "CREDENTIALS", "RDP_LAUNCH", "LDAP")
-    category: Option<String>,
-    /// Optional detailed technical information for debugging
-    details: Option<String>,
 }
 
 /// Tauri command to show an error in the dedicated error window.
@@ -193,14 +169,10 @@ async fn toggle_error_window(app_handle: tauri::AppHandle) -> Result<(), String>
 }
 
 use ldap3::{LdapConnAsync, Scope, SearchEntry};
-use serde::Deserialize;
 use std::ffi::OsStr;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -220,116 +192,6 @@ use windows::Win32::System::Registry::{
 /// Global state tracking the last hidden window for restoration purposes.
 /// Used by the system tray to restore the most recently hidden window.
 static LAST_HIDDEN_WINDOW: Mutex<String> = Mutex::new(String::new());
-
-/// Global flag indicating whether debug logging is enabled.
-/// When true, comprehensive logs are written to the debug log file.
-static DEBUG_MODE: Mutex<bool> = Mutex::new(false);
-
-/// Credentials structure for receiving username/password from the frontend.
-///
-/// This structure is used when saving or updating credentials through the
-/// `save_credentials` and `save_per_host_credentials` commands.
-#[derive(Deserialize)]
-struct Credentials {
-    /// Username in any supported format (DOMAIN\user, user@domain.com, or username)
-    username: String,
-    /// Password (stored securely in Windows Credential Manager, never logged)
-    password: String,
-}
-
-/// Stored credentials structure returned to the frontend.
-///
-/// This structure is used when retrieving credentials from Windows Credential Manager.
-#[derive(serde::Serialize)]
-struct StoredCredentials {
-    /// Username exactly as stored in Credential Manager
-    username: String,
-    /// Password retrieved from Credential Manager
-    password: String,
-}
-
-/// Host structure representing an RDP server.
-///
-/// Hosts are stored in a CSV file (`hosts.csv`) in the QuickConnect AppData directory.
-/// Each host has a unique hostname (FQDN format required), optional description,
-/// and tracks the last connection timestamp.
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-struct Host {
-    /// Fully Qualified Domain Name (e.g., "server.domain.com")
-    hostname: String,
-    /// Optional user-provided description of the server
-    description: String,
-    /// ISO 8601 formatted timestamp of last successful connection (optional)
-    last_connected: Option<String>,
-}
-
-/// Recent connection structure for tracking connection history.
-///
-/// Recent connections are stored separately from the main hosts list to track
-/// the 5 most recently accessed servers for quick access.
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-struct RecentConnection {
-    /// Hostname of the connected server
-    hostname: String,
-    /// Description of the server (copied from Host at connection time)
-    description: String,
-    /// Unix timestamp (seconds since epoch) of the connection
-    timestamp: u64,
-}
-
-/// Collection of recent connections with automatic management.
-///
-/// This structure maintains a list of up to 5 most recent connections,
-/// automatically removing duplicates and truncating to the limit.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RecentConnections {
-    /// Ordered list of connections (most recent first)
-    connections: Vec<RecentConnection>,
-}
-
-impl RecentConnections {
-    /// Creates a new empty recent connections collection.
-    fn new() -> Self {
-        Self {
-            connections: Vec::new(),
-        }
-    }
-
-    /// Adds a new connection to the recent connections list.
-    ///
-    /// This method:
-    /// - Removes any existing entry for the same hostname (preventing duplicates)
-    /// - Inserts the new connection at the beginning of the list
-    /// - Automatically truncates the list to 5 most recent connections
-    ///
-    /// # Arguments
-    /// * `hostname` - The FQDN of the connected server
-    /// * `description` - The server description (from the Host record)
-    fn add_connection(&mut self, hostname: String, description: String) {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        // Remove existing entry for this hostname if it exists
-        self.connections.retain(|c| c.hostname != hostname);
-
-        // Add new connection at the beginning
-        self.connections.insert(
-            0,
-            RecentConnection {
-                hostname,
-                description,
-                timestamp,
-            },
-        );
-
-        // Keep only the 5 most recent
-        if self.connections.len() > 5 {
-            self.connections.truncate(5);
-        }
-    }
-}
 
 /// Gets the QuickConnect application data directory.
 ///
@@ -1492,216 +1354,6 @@ disableconnectionsharing:i:0\r\n",
     // No cleanup needed - file can be reused for future connections
 
     Ok(())
-}
-
-fn debug_log(level: &str, category: &str, message: &str, error_details: Option<&str>) {
-    let debug_enabled = DEBUG_MODE.lock().map(|flag| *flag).unwrap_or(false);
-
-    if !debug_enabled {
-        return;
-    }
-
-    // Use AppData\Roaming\QuickConnect for reliable write permissions
-    let log_file = if let Ok(appdata_dir) = std::env::var("APPDATA") {
-        let quick_connect_dir = PathBuf::from(appdata_dir).join("QuickConnect");
-        // Create directory if it doesn't exist
-        let _ = std::fs::create_dir_all(&quick_connect_dir);
-        quick_connect_dir.join("QuickConnect_Debug.log")
-    } else {
-        // Fallback to current directory if APPDATA not available
-        PathBuf::from("QuickConnect_Debug.log")
-    };
-
-    // Check if file is new (to add header)
-    let is_new_file = !log_file.exists();
-
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_file) {
-        // Write header if this is a new file
-        if is_new_file {
-            let _ = writeln!(file, "{}", "=".repeat(80));
-            let _ = writeln!(file, "QuickConnect Debug Log");
-            let _ = writeln!(file, "{}", "=".repeat(80));
-            let _ = writeln!(
-                file,
-                "This file contains detailed application logs and debugging information."
-            );
-            let _ = writeln!(
-                file,
-                "Generated when running QuickConnect with --debug or --debug-log argument."
-            );
-            let _ = writeln!(file);
-            let _ = writeln!(file, "To enable debug logging, run: QuickConnect.exe --debug");
-            let _ = writeln!(file);
-            let _ = writeln!(file, "Log Levels:");
-            let _ = writeln!(file, "  - INFO:  General informational messages");
-            let _ = writeln!(
-                file,
-                "  - WARN:  Warning messages that may require attention"
-            );
-            let _ = writeln!(file, "  - ERROR: Error messages indicating failures");
-            let _ = writeln!(file, "  - DEBUG: Detailed debugging information");
-            let _ = writeln!(file);
-            let _ = writeln!(file, "{}", "=".repeat(80));
-            let _ = writeln!(file);
-        }
-
-        // Format timestamp as human-readable date/time
-        use chrono::Local;
-        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
-
-        // Format log level with color indicators (using text symbols)
-        let level_indicator = match level {
-            "ERROR" => "[!]",
-            "WARN" => "[*]",
-            "INFO" => "[i]",
-            "DEBUG" => "[d]",
-            _ => "[?]",
-        };
-
-        // Build the log entry with improved formatting
-        let mut log_entry = format!(
-            "\n{} {} [{:8}] [{}]\n",
-            timestamp, level_indicator, level, category
-        );
-        log_entry.push_str(&format!("Message: {}\n", message));
-
-        if let Some(details) = error_details {
-            log_entry.push_str(&format!("Details: {}\n", details));
-        }
-
-        // Add context information based on category
-        match category {
-            "RDP_LAUNCH" => {
-                if let Ok(appdata_dir) = std::env::var("APPDATA") {
-                    let connections_dir = PathBuf::from(appdata_dir)
-                        .join("QuickConnect")
-                        .join("Connections");
-                    log_entry.push_str(&format!("RDP Files Directory: {:?}\n", connections_dir));
-                }
-            }
-            "CREDENTIALS" => {
-                log_entry.push_str("Credential Storage: Windows Credential Manager\n");
-            }
-            "LDAP_CONNECTION" | "LDAP_BIND" | "LDAP_SEARCH" => {
-                log_entry.push_str("LDAP Port: 389\n");
-            }
-            _ => {}
-        }
-
-        // Add possible reasons for errors
-        if level == "ERROR" {
-            log_entry.push_str("\nPossible Causes:\n");
-            match category {
-                "LDAP_CONNECTION" => {
-                    log_entry
-                        .push_str("  • LDAP server is not reachable or incorrect server name\n");
-                    log_entry.push_str("  • Port 389 is blocked by firewall\n");
-                    log_entry.push_str("  • Network connectivity issues\n");
-                    log_entry.push_str("  • DNS resolution failure for server name\n");
-                    log_entry.push_str("\nTroubleshooting Steps:\n");
-                    log_entry.push_str("  1. Verify server name is correct\n");
-                    log_entry.push_str("  2. Test network connectivity: ping <server>\n");
-                    log_entry.push_str("  3. Check firewall rules for port 389\n");
-                    log_entry.push_str("  4. Verify DNS resolution: nslookup <server>\n");
-                }
-                "LDAP_BIND" => {
-                    log_entry.push_str("  • Invalid credentials (username or password)\n");
-                    log_entry.push_str("  • Account is locked or disabled\n");
-                    log_entry.push_str("  • Username format is incorrect\n");
-                    log_entry.push_str("  • Insufficient permissions for LDAP queries\n");
-                    log_entry.push_str("  • Anonymous bind is disabled on the domain controller\n");
-                    log_entry.push_str("\nTroubleshooting Steps:\n");
-                    log_entry.push_str("  1. Verify credentials are correct\n");
-                    log_entry.push_str("  2. Try different username formats: DOMAIN\\username or username@domain.com\n");
-                    log_entry.push_str(
-                        "  3. Check if account is locked or disabled in Active Directory\n",
-                    );
-                    log_entry.push_str("  4. Verify account has permission to query AD\n");
-                }
-                "LDAP_SEARCH" => {
-                    log_entry.push_str("  • Base DN is incorrect or domain name is wrong\n");
-                    log_entry.push_str("  • LDAP filter syntax error\n");
-                    log_entry.push_str("  • Insufficient permissions to search the directory\n");
-                    log_entry.push_str("  • No Windows Server computers found in the domain\n");
-                    log_entry.push_str("  • Connection was lost during search\n");
-                    log_entry.push_str("\nTroubleshooting Steps:\n");
-                    log_entry.push_str("  1. Verify domain name is correct\n");
-                    log_entry.push_str("  2. Check LDAP filter syntax\n");
-                    log_entry
-                        .push_str("  3. Verify account has read permissions on computer objects\n");
-                }
-                "CREDENTIALS" => {
-                    log_entry.push_str("  • Windows Credential Manager access denied\n");
-                    log_entry.push_str("  • Credential storage is corrupted\n");
-                    log_entry.push_str("  • Insufficient permissions to access credentials\n");
-                    log_entry.push_str("\nTroubleshooting Steps:\n");
-                    log_entry.push_str("  1. Run application as administrator\n");
-                    log_entry.push_str("  2. Check Windows Credential Manager (Control Panel > Credential Manager)\n");
-                    log_entry.push_str("  3. Try removing and re-adding credentials\n");
-                }
-                "RDP_LAUNCH" => {
-                    log_entry
-                        .push_str("  • mstsc.exe (RDP client) is not available or corrupted\n");
-                    log_entry
-                        .push_str("  • RDP file creation failed (permissions or disk space)\n");
-                    log_entry.push_str("  • RDP file directory is not accessible\n");
-                    log_entry.push_str("  • Malformed RDP file content\n");
-                    log_entry.push_str("\nTroubleshooting Steps:\n");
-                    log_entry.push_str("  1. Verify mstsc.exe exists in System32\n");
-                    log_entry.push_str("  2. Check disk space in AppData folder\n");
-                    log_entry.push_str(
-                        "  3. Verify file permissions in %APPDATA%\\QuickConnect\\Connections\n",
-                    );
-                    log_entry.push_str("  4. Try running as administrator\n");
-                }
-                "CSV_OPERATIONS" => {
-                    log_entry.push_str("  • File permissions issue\n");
-                    log_entry.push_str("  • Disk space is full\n");
-                    log_entry.push_str("  • File is locked by another process\n");
-                    log_entry.push_str("  • Invalid CSV format or corrupted file\n");
-                    log_entry.push_str("\nTroubleshooting Steps:\n");
-                    log_entry.push_str("  1. Close any programs that may have hosts.csv open\n");
-                    log_entry.push_str("  2. Check disk space\n");
-                    log_entry.push_str("  3. Verify file permissions\n");
-                    log_entry.push_str("  4. Check if antivirus is blocking file access\n");
-                }
-                "HOST_CREDENTIALS" => {
-                    log_entry.push_str("  • Failed to save/retrieve per-host credentials\n");
-                    log_entry.push_str("  • Credential format is invalid\n");
-                    log_entry.push_str("  • Permission denied\n");
-                    log_entry.push_str("\nTroubleshooting Steps:\n");
-                    log_entry
-                        .push_str("  1. Check Windows Credential Manager for TERMSRV/* entries\n");
-                    log_entry.push_str("  2. Try running as administrator\n");
-                    log_entry.push_str("  3. Verify hostname is valid\n");
-                }
-                _ => {
-                    log_entry.push_str("  • Check system event logs for more details\n");
-                    log_entry.push_str("  • Verify application has necessary permissions\n");
-                    log_entry.push_str("  • Try running as administrator\n");
-                }
-            }
-        }
-
-        // Add warning context
-        if level == "WARN" {
-            log_entry.push_str("\nRecommendation: This warning may not prevent operation but should be investigated.\n");
-        }
-
-        log_entry.push_str(&format!("{}\n", "-".repeat(80)));
-
-        if let Err(e) = write!(file, "{}", log_entry) {
-            eprintln!("Failed to write to debug log file: {}", e);
-        }
-    } else {
-        eprintln!("Failed to open debug log file: {:?}", log_file);
-    }
-}
-
-fn set_debug_mode(enabled: bool) {
-    if let Ok(mut flag) = DEBUG_MODE.lock() {
-        *flag = enabled;
-    }
 }
 
 #[tauri::command]

@@ -174,25 +174,12 @@ async fn toggle_error_window(app_handle: tauri::AppHandle) -> Result<(), String>
     }
 }
 
-use ldap3::{LdapConnAsync, Scope, SearchEntry};
-use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager,
-};
-use windows::core::{PCWSTR, PWSTR};
-use windows::Win32::Foundation::FILETIME;
-use windows::Win32::Security::Credentials::{
-    CredDeleteW, CredEnumerateW, CredWriteW, CREDENTIALW, CRED_ENUMERATE_FLAGS,
-    CRED_FLAGS, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
-};
-use windows::Win32::System::Registry::{
-    RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
-    HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_SZ, REG_VALUE_TYPE,
 };
 
 /// Global state tracking the last hidden window for restoration purposes.
@@ -224,6 +211,7 @@ fn get_recent_connections_file() -> Result<PathBuf, String> {
 /// # Returns
 /// * `Ok(())` - If save was successful
 /// * `Err(String)` - If serialization or file write fails
+#[allow(dead_code)]
 fn save_recent_connections(recent: &RecentConnections) -> Result<(), String> {
     let file_path = get_recent_connections_file()?;
     let json = serde_json::to_string_pretty(recent)
@@ -460,337 +448,44 @@ async fn hide_hosts_window(app_handle: tauri::AppHandle) -> Result<(), String> {
 
 
 
+/// Tauri command to launch an RDP connection to a host.
+///
+/// This is a thin wrapper that delegates to the core RDP launcher and handles UI events.
+///
+/// # Side Effects
+/// - Writes RDP credentials to Windows Credential Manager (TERMSRV/{hostname})
+/// - Creates RDP file in %APPDATA%\QuickConnect\Connections
+/// - Spawns mstsc.exe process
+/// - Updates recent connections list
+/// - Updates last connected timestamp in hosts.csv
+/// - Emits "host-connected" event to refresh UI
+/// - Rebuilds system tray menu
 #[tauri::command]
 async fn launch_rdp(app_handle: tauri::AppHandle, host: Host) -> Result<(), String> {
-    debug_log(
-        "INFO",
-        "RDP_LAUNCH",
-        &format!("Starting RDP launch for host: {}", host.hostname),
-        None,
-    );
+    // Call the core RDP launcher using function injection for testability
+    core::rdp_launcher::launch_rdp_connection(
+        &host,
+        |hostname| async move {
+            commands::get_host_credentials(hostname)
+                .await
+                .map_err(|e| AppError::CredentialManagerError {
+                    operation: "get host credentials".to_string(),
+                    source: Some(anyhow::anyhow!(e)),
+                })
+        },
+        || async {
+            commands::get_stored_credentials()
+                .await
+                .map_err(|e| AppError::CredentialManagerError {
+                    operation: "get stored credentials".to_string(),
+                    source: Some(anyhow::anyhow!(e)),
+                })
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
-    // First check for per-host credentials, fall back to global credentials
-    let credentials = match commands::get_host_credentials(host.hostname.clone()).await? {
-        Some(creds) => {
-            debug_log(
-                "INFO",
-                "RDP_LAUNCH",
-                &format!("Using per-host credentials for {}", host.hostname),
-                None,
-            );
-            creds
-        }
-        None => {
-            debug_log(
-                "INFO",
-                "RDP_LAUNCH",
-                &format!(
-                    "No per-host credentials found for {}, using global credentials",
-                    host.hostname
-                ),
-                None,
-            );
-            match commands::get_stored_credentials().await? {
-                Some(creds) => creds,
-                None => {
-                    let error =
-                        "No credentials found. Please save credentials in the login window first.";
-                    debug_log(
-                        "ERROR",
-                        "RDP_LAUNCH",
-                        error,
-                        Some("Neither per-host nor global credentials are available"),
-                    );
-                    return Err(error.to_string());
-                }
-            }
-        }
-    };
-
-    // Parse username to extract domain and username components BEFORE saving credentials
-    // Supports formats: "DOMAIN\username", "username@domain.com", or "username"
-    let (domain, username) = if credentials.username.contains('\\') {
-        // Format: DOMAIN\username
-        let parts: Vec<&str> = credentials.username.splitn(2, '\\').collect();
-        if parts.len() == 2 {
-            (parts[0].to_string(), parts[1].to_string())
-        } else {
-            (String::new(), credentials.username.clone())
-        }
-    } else if credentials.username.contains('@') {
-        // Format: username@domain.com
-        let parts: Vec<&str> = credentials.username.splitn(2, '@').collect();
-        if parts.len() == 2 {
-            (parts[1].to_string(), parts[0].to_string())
-        } else {
-            (String::new(), credentials.username.clone())
-        }
-    } else {
-        // Format: just username (no domain)
-        (String::new(), credentials.username.clone())
-    };
-
-    debug_log(
-        "INFO",
-        "RDP_LAUNCH",
-        &format!(
-            "Parsed credentials - Domain: '{}', Username: '{}'",
-            domain, username
-        ),
-        Some(&format!(
-            "Domain: '{}', Username: '{}', Password length: {}",
-            domain,
-            username,
-            credentials.password.len()
-        )),
-    );
-
-    // If per-host credentials don't exist, we need to save the global credentials to TERMSRV/{hostname}
-    // If per-host credentials exist, they're already saved at TERMSRV/{hostname}
-    if commands::get_host_credentials(host.hostname.clone()).await?.is_none() {
-        debug_log(
-            "INFO",
-            "RDP_LAUNCH",
-            &format!(
-                "Saving global credentials to TERMSRV/{} for RDP SSO",
-                host.hostname
-            ),
-            None,
-        );
-
-        unsafe {
-            // Convert password to wide string (UTF-16) as Windows expects
-            let password_wide: Vec<u16> = OsStr::new(&credentials.password)
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-
-            let target_name: Vec<u16> = OsStr::new(&format!("TERMSRV/{}", host.hostname))
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-            // Use FULL username including domain for TERMSRV (e.g., DOMAIN\username)
-            let termsrv_username = if !domain.is_empty() {
-                format!("{}\\{}", domain, username)
-            } else {
-                username.clone()
-            };
-            let username_wide: Vec<u16> = OsStr::new(&termsrv_username)
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-
-            let cred = CREDENTIALW {
-                Flags: CRED_FLAGS(0),
-                Type: CRED_TYPE_GENERIC,
-                TargetName: PWSTR(target_name.as_ptr() as *mut u16),
-                Comment: PWSTR::null(),
-                LastWritten: FILETIME::default(),
-                CredentialBlobSize: (password_wide.len() * 2) as u32, // Size in bytes, including null terminator
-                CredentialBlob: password_wide.as_ptr() as *mut u8,
-                Persist: CRED_PERSIST_LOCAL_MACHINE,
-                AttributeCount: 0,
-                Attributes: std::ptr::null_mut(),
-                TargetAlias: PWSTR::null(),
-                UserName: PWSTR(username_wide.as_ptr() as *mut u16),
-            };
-
-            match CredWriteW(&cred, 0) {
-                Ok(_) => {
-                    debug_log(
-                        "INFO",
-                        "RDP_LAUNCH",
-                        &format!(
-                            "Successfully saved credentials to TERMSRV/{} with username: {}",
-                            host.hostname, termsrv_username
-                        ),
-                        None,
-                    );
-                }
-                Err(e) => {
-                    let error = format!("Failed to save RDP credentials: {:?}", e);
-                    debug_log(
-                        "ERROR",
-                        "RDP_LAUNCH",
-                        &error,
-                        Some(&format!(
-                            "CredWriteW error for host {}: {:?}",
-                            host.hostname, e
-                        )),
-                    );
-                    return Err(error);
-                }
-            }
-        }
-    } else {
-        debug_log(
-            "INFO",
-            "RDP_LAUNCH",
-            &format!(
-                "Using existing per-host credentials at TERMSRV/{}",
-                host.hostname
-            ),
-            None,
-        );
-    }
-
-    // Get AppData\Roaming directory and create QuickConnect\Connections folder
-    let appdata_dir =
-        std::env::var("APPDATA").map_err(|_| "Failed to get APPDATA directory".to_string())?;
-    let connections_dir = PathBuf::from(&appdata_dir)
-        .join("QuickConnect")
-        .join("Connections");
-
-    debug_log(
-        "DEBUG",
-        "RDP_LAUNCH",
-        &format!("Connections directory: {:?}", connections_dir),
-        Some(&format!("AppData directory: {}", appdata_dir)),
-    );
-
-    // Create directory if it doesn't exist
-    std::fs::create_dir_all(&connections_dir)
-        .map_err(|e| format!("Failed to create connections directory: {}", e))?;
-
-    // Create filename using hostname
-    let rdp_filename = format!("{}.rdp", host.hostname);
-    let rdp_path = connections_dir.join(&rdp_filename);
-
-    // Create RDP file content (no leading spaces, proper CRLF line endings)
-    let rdp_content = format!(
-        "screen mode id:i:2\r\n\
-desktopwidth:i:1920\r\n\
-desktopheight:i:1080\r\n\
-session bpp:i:32\r\n\
-full address:s:{}\r\n\
-compression:i:1\r\n\
-keyboardhook:i:2\r\n\
-audiocapturemode:i:1\r\n\
-videoplaybackmode:i:1\r\n\
-connection type:i:2\r\n\
-networkautodetect:i:1\r\n\
-bandwidthautodetect:i:1\r\n\
-enableworkspacereconnect:i:1\r\n\
-disable wallpaper:i:0\r\n\
-allow desktop composition:i:0\r\n\
-allow font smoothing:i:0\r\n\
-disable full window drag:i:1\r\n\
-disable menu anims:i:1\r\n\
-disable themes:i:0\r\n\
-disable cursor setting:i:0\r\n\
-bitmapcachepersistenable:i:1\r\n\
-audiomode:i:0\r\n\
-redirectprinters:i:1\r\n\
-redirectcomports:i:0\r\n\
-redirectsmartcards:i:1\r\n\
-redirectclipboard:i:1\r\n\
-redirectposdevices:i:0\r\n\
-autoreconnection enabled:i:1\r\n\
-authentication level:i:0\r\n\
-prompt for credentials:i:0\r\n\
-negotiate security layer:i:1\r\n\
-remoteapplicationmode:i:0\r\n\
-alternate shell:s:\r\n\
-shell working directory:s:\r\n\
-gatewayhostname:s:\r\n\
-gatewayusagemethod:i:4\r\n\
-gatewaycredentialssource:i:4\r\n\
-gatewayprofileusagemethod:i:0\r\n\
-promptcredentialonce:i:1\r\n\
-use redirection server name:i:0\r\n\
-rdgiskdcproxy:i:0\r\n\
-kdcproxyname:s:\r\n\
-username:s:{}\r\n\
-domain:s:{}\r\n\
-enablecredsspsupport:i:1\r\n\
-public mode:i:0\r\n\
-cert ignore:i:1\r\n\
-prompt for credentials on client:i:0\r\n\
-disableconnectionsharing:i:0\r\n",
-        host.hostname, username, domain
-    );
-
-    debug_log(
-        "INFO",
-        "RDP_LAUNCH",
-        &format!("Writing RDP file to: {:?}", rdp_path),
-        Some(&format!(
-            "RDP content length: {} bytes, File: {:?}",
-            rdp_content.len(),
-            rdp_path
-        )),
-    );
-
-    // Write the RDP file with explicit UTF-8 encoding
-    match std::fs::write(&rdp_path, rdp_content.as_bytes()) {
-        Ok(_) => {
-            debug_log(
-                "INFO",
-                "RDP_LAUNCH",
-                &format!("RDP file written successfully to {:?}", rdp_path),
-                None,
-            );
-        }
-        Err(e) => {
-            let error = format!("Failed to write RDP file: {}", e);
-            debug_log(
-                "ERROR",
-                "RDP_LAUNCH",
-                &error,
-                Some(&format!("File write error: {:?}", e)),
-            );
-            return Err(error);
-        }
-    }
-
-    // Launch RDP using mstsc.exe directly with the RDP file as parameter
-    // This bypasses the file trust warning that appears when opening .rdp files directly
-    debug_log(
-        "INFO",
-        "RDP_LAUNCH",
-        "Attempting to launch mstsc.exe with RDP file",
-        Some(&format!("Target file: {:?}", rdp_path)),
-    );
-
-    // Use std::process::Command to launch mstsc.exe
-    let mstsc_result = std::process::Command::new("mstsc.exe")
-        .arg(rdp_path.to_string_lossy().as_ref())
-        .spawn();
-
-    match mstsc_result {
-        Ok(_) => {
-            debug_log(
-                "INFO",
-                "RDP_LAUNCH",
-                &format!(
-                    "Successfully launched RDP connection to {} using mstsc.exe",
-                    host.hostname
-                ),
-                Some(&format!(
-                    "RDP client invoked for hostname: {}",
-                    host.hostname
-                )),
-            );
-        }
-        Err(e) => {
-            let error = format!("Failed to launch mstsc.exe: {}", e);
-            debug_log(
-                "ERROR",
-                "RDP_LAUNCH",
-                &error,
-                Some(&format!("Failed to spawn mstsc.exe process: {:?}", e)),
-            );
-            return Err(error);
-        }
-    }
-
-    // Save to recent connections
-    if let Ok(mut recent) = load_recent_connections() {
-        recent.add_connection(host.hostname.clone(), host.description.clone());
-        let _ = save_recent_connections(&recent);
-    }
-
-    // Update last connected timestamp in hosts.csv
+    // Update last connected timestamp and emit UI events
     if let Err(e) = commands::hosts::update_last_connected(&host.hostname) {
         debug_log(
             "WARN",
@@ -798,464 +493,110 @@ disableconnectionsharing:i:0\r\n",
             &format!("Failed to update last connected timestamp: {}", e),
             None,
         );
-        // Don't fail the RDP launch if timestamp update fails
     } else {
-        // Successfully updated timestamp, emit event to refresh UI
-        debug_log(
-            "INFO",
-            "RDP_LAUNCH",
-            "Emitting host-connected event to refresh UI",
-            None,
-        );
-
-        // Emit event to all windows to refresh host list
+        // Emit event to refresh UI
         if let Some(main_window) = app_handle.get_webview_window("main") {
             let _ = main_window.emit("host-connected", &host.hostname);
         }
 
-        // Rebuild tray menu to update recent connections list
+        // Rebuild tray menu to update recent connections
         if let Some(tray) = app_handle.tray_by_id("main") {
             let current_theme =
                 get_theme(app_handle.clone()).unwrap_or_else(|_| "dark".to_string());
             if let Ok(new_menu) = build_tray_menu(&app_handle, &current_theme) {
                 let _ = tray.set_menu(Some(new_menu));
-                debug_log(
-                    "INFO",
-                    "RDP_LAUNCH",
-                    "Updated tray menu with latest recent connections",
-                    None,
-                );
             }
         }
     }
 
-    // RDP file is now persistent in AppData\Roaming\QuickConnect\Connections
-    // No cleanup needed - file can be reused for future connections
-
     Ok(())
 }
 
+/// Tauri command to scan Active Directory for Windows Servers via LDAP.
+///
+/// This is a thin wrapper that delegates to the core LDAP scanner and handles CSV writing and UI events.
+///
+/// # Side Effects
+/// - Connects to LDAP server (port 389)
+/// - Authenticates with stored credentials
+/// - Searches Active Directory
+/// - Writes results to hosts.csv
+/// - Emits "hosts-updated" event to refresh UI
+/// - Sets hosts window to always-on-top during scan
 #[tauri::command]
 async fn scan_domain(
     app_handle: tauri::AppHandle,
     domain: String,
     server: String,
 ) -> Result<String, String> {
-    debug_log(
-        "INFO",
-        "LDAP_SCAN",
-        &format!(
-            "scan_domain command called with domain: {}, server: {}",
-            domain, server
-        ),
-        None,
-    );
-
-    // Get the hosts window and set it to always on top temporarily
-    let hosts_window = match app_handle.get_webview_window("hosts") {
-        Some(window) => {
-            debug_log("INFO", "LDAP_SCAN", "Hosts window found", None);
-            window
-        }
-        None => {
-            let error = "Failed to get hosts window";
-            debug_log(
-                "ERROR",
-                "LDAP_SCAN",
-                error,
-                Some("Hosts window does not exist or is not accessible"),
-            );
-            return Err(error.to_string());
-        }
-    };
-
-    // Set window to always on top
-    if let Err(e) = hosts_window.set_always_on_top(true) {
-        let error = "Failed to set window always on top";
-        debug_log(
-            "WARN",
-            "LDAP_SCAN",
-            error,
-            Some(&format!("Window operation error: {:?}", e)),
-        );
-        // Continue anyway, this is not critical
-    }
-
-    // Perform the LDAP scan
-    let result = scan_domain_ldap(app_handle.clone(), domain, server).await;
-
-    // Reset always on top after command completes
-    let _ = hosts_window.set_always_on_top(false);
-
-    result
-}
-
-async fn scan_domain_ldap(
-    app_handle: tauri::AppHandle,
-    domain: String,
-    server: String,
-) -> Result<String, String> {
-    debug_log(
-        "INFO",
-        "LDAP_SCAN",
-        &format!(
-            "Starting LDAP scan for domain: {} on server: {}",
-            domain, server
-        ),
-        Some(&format!("Domain: {}, Server: {}", domain, server)),
-    );
-
-    // Validate inputs
-    if domain.is_empty() {
-        let error = "Domain name is empty";
-        debug_log(
-            "ERROR",
-            "LDAP_SCAN",
-            error,
-            Some("Domain parameter was empty or whitespace"),
-        );
-        return Err(error.to_string());
-    }
-
-    if server.is_empty() {
-        let error = "Server name is empty";
-        debug_log(
-            "ERROR",
-            "LDAP_SCAN",
-            error,
-            Some("Server parameter was empty or whitespace"),
-        );
-        return Err(error.to_string());
-    }
-
-    // Build the LDAP URL
-    let ldap_url = format!("ldap://{}:389", server);
-    debug_log(
-        "INFO",
-        "LDAP_CONNECTION",
-        &format!("Attempting to connect to: {}", ldap_url),
-        None,
-    );
-
-    // Connect to LDAP server
-    let (conn, mut ldap) = match LdapConnAsync::new(&ldap_url).await {
-        Ok(conn) => {
-            debug_log(
-                "INFO",
-                "LDAP_CONNECTION",
-                "LDAP connection established successfully",
-                None,
-            );
-            conn
-        }
-        Err(e) => {
-            let error_msg = format!("Failed to connect to LDAP server {}: {}", server, e);
-            debug_log(
-                "ERROR",
-                "LDAP_CONNECTION",
-                &error_msg,
-                Some(&format!(
-                    "Connection error: {:?}. Check if server is reachable and port 389 is open.",
-                    e
-                )),
-            );
-            return Err(error_msg);
-        }
-    };
-
-    // Drive the connection in the background
-    ldap3::drive!(conn);
-
-    // Corporate AD environments require authenticated bind for searches
-    // Skip anonymous bind and go straight to authenticated bind
-    debug_log(
-        "INFO",
-        "LDAP_BIND",
-        "Retrieving stored credentials for LDAP authentication",
-        None,
-    );
-
-    // Get stored credentials
-    let credentials = match commands::get_stored_credentials().await {
-        Ok(Some(creds)) => {
-            debug_log(
-                "INFO",
-                "CREDENTIALS",
-                &format!(
-                    "Retrieved stored credentials for LDAP: username={}, password_len={}",
-                    creds.username,
-                    creds.password.len()
-                ),
-                None,
-            );
-            creds
-        }
-        Ok(None) => {
-            let error = "No stored credentials found. Please save your domain credentials in the login window first.";
-            debug_log("ERROR", "CREDENTIALS", error, Some("No credentials found in Windows Credential Manager. User must save credentials in login window before scanning."));
-            return Err(error.to_string());
-        }
-        Err(e) => {
-            let error = format!("Failed to retrieve credentials: {}", e);
-            debug_log(
-                "ERROR",
-                "CREDENTIALS",
-                &error,
-                Some(&format!("Credential retrieval error: {:?}", e)),
-            );
-            return Err(error);
-        }
-    };
-
-    // Format the username for LDAP binding
-    // Support multiple formats: username, DOMAIN\username, or username@domain.com
-    let bind_dn = if credentials.username.contains('@') || credentials.username.contains('\\') {
-        credentials.username.clone()
-    } else {
-        // If just username, append @domain
-        format!("{}@{}", credentials.username, domain)
-    };
-
-    debug_log(
-        "INFO",
-        "LDAP_BIND",
-        &format!(
-            "Attempting authenticated LDAP bind with username: {}",
-            bind_dn
-        ),
-        Some(&format!("Bind DN: {}", bind_dn)),
-    );
-
-    // Perform authenticated bind
-    match ldap.simple_bind(&bind_dn, &credentials.password).await {
-        Ok(result) => {
-            debug_log(
-                "INFO",
-                "LDAP_BIND",
-                "Authenticated LDAP bind successful",
-                Some(&format!("Bind result: {:?}", result)),
-            );
-        }
-        Err(e) => {
-            let error = format!("Authenticated LDAP bind failed: {}. Please verify your credentials have permission to query Active Directory.", e);
-            debug_log("ERROR", "LDAP_BIND", &error, Some(&format!("Bind error: {:?}. Check username format (try DOMAIN\\username or username@domain.com) and password.", e)));
-            return Err(error);
-        }
-    }
-
-    // Build the search base DN from domain
-    // e.g., "domain.com" -> "DC=domain,DC=com"
-    let base_dn = domain
-        .split('.')
-        .map(|part| format!("DC={}", part))
-        .collect::<Vec<String>>()
-        .join(",");
-
-    debug_log(
-        "INFO",
-        "LDAP_SEARCH",
-        &format!("Searching base DN: {}", base_dn),
-        Some(&format!("Base DN: {}, Filter: (&(objectClass=computer)(operatingSystem=Windows Server*)(dNSHostName=*))", base_dn)),
-    );
-
-    // Search for Windows Server computers
-    // LDAP filter for computer objects with Windows Server operating system
-    let filter = "(&(objectClass=computer)(operatingSystem=Windows Server*)(dNSHostName=*))";
-    let attrs = vec!["dNSHostName", "description", "operatingSystem"];
-
-    debug_log(
-        "INFO",
-        "LDAP_SEARCH",
-        &format!("Using LDAP filter: {}", filter),
-        None,
-    );
-
-    let (rs, _res) = match ldap.search(&base_dn, Scope::Subtree, filter, attrs).await {
-        Ok(result) => match result.success() {
-            Ok(search_result) => {
-                debug_log(
-                    "INFO",
-                    "LDAP_SEARCH",
-                    &format!(
-                        "LDAP search completed, found {} entries",
-                        search_result.0.len()
-                    ),
-                    None,
-                );
-                search_result
-            }
-            Err(e) => {
-                let error = format!("LDAP search failed: {}", e);
-                debug_log(
-                    "ERROR",
-                    "LDAP_SEARCH",
-                    &error,
-                    Some(&format!("Search result error: {:?}", e)),
-                );
-                return Err(error);
-            }
-        },
-        Err(e) => {
-            let error = format!("Failed to search LDAP: {}", e);
-            debug_log(
-                "ERROR",
-                "LDAP_SEARCH",
-                &error,
-                Some(&format!("Search execution error: {:?}", e)),
-            );
-            return Err(error);
-        }
-    };
-
-    debug_log(
-        "INFO",
-        "LDAP_SEARCH",
-        &format!("Found {} entries from LDAP", rs.len()),
-        Some(&format!("Entry count: {}", rs.len())),
-    );
-
-    // Parse results
-    let mut hosts = Vec::new();
-    for entry in rs {
-        let search_entry = SearchEntry::construct(entry);
-
-        // Get the dNSHostName attribute
-        if let Some(hostname_values) = search_entry.attrs.get("dNSHostName") {
-            if let Some(hostname) = hostname_values.first() {
-                // Get description if available
-                let description = search_entry
-                    .attrs
-                    .get("description")
-                    .and_then(|v| v.first())
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
-
-                debug_log(
-                    "INFO",
-                    "LDAP_SEARCH",
-                    &format!("Found host: {} - {}", hostname, description),
-                    Some(&format!(
-                        "Hostname: {}, Description: {}",
-                        hostname, description
-                    )),
-                );
-
-                hosts.push(Host {
-                    hostname: hostname.to_string(),
-                    description,
-                    last_connected: None,
-                });
-            }
-        } else {
-            debug_log(
-                "WARN",
-                "LDAP_SEARCH",
-                "LDAP entry found but missing dNSHostName attribute",
-                None,
-            );
-        }
-    }
-
-    // Unbind from LDAP
-    let _ = ldap.unbind().await;
-    debug_log("INFO", "LDAP_CONNECTION", "LDAP connection closed", None);
-
-    // Write results to CSV
-    if hosts.is_empty() {
-        let error = "No Windows Servers found in the domain.";
-        debug_log("ERROR", "LDAP_SEARCH", error, Some("Search completed but no hosts were found. Check if filter matches any computers in the domain."));
-        return Err(error.to_string());
-    }
-
-    debug_log(
-        "INFO",
-        "CSV_OPERATIONS",
-        &format!("Writing {} hosts to CSV file", hosts.len()),
-        None,
-    );
-
-    // Write to CSV file
-    let csv_path = commands::hosts::get_hosts_csv_path()?;
-    let mut wtr = match csv::WriterBuilder::new().from_path(&csv_path) {
-        Ok(writer) => writer,
-        Err(e) => {
-            let error = format!("Failed to create CSV writer: {}", e);
-            debug_log(
-                "ERROR",
-                "CSV_OPERATIONS",
-                &error,
-                Some(&format!("CSV writer creation error: {:?}", e)),
-            );
-            return Err(error);
-        }
-    };
-
-    // Write header
-    if let Err(e) = wtr.write_record(["hostname", "description"]) {
-        let error = format!("Failed to write CSV header: {}", e);
-        debug_log(
-            "ERROR",
-            "CSV_OPERATIONS",
-            &error,
-            Some(&format!("CSV write error: {:?}", e)),
-        );
-        return Err(error);
-    }
-
-    // Write records
-    for host in &hosts {
-        if let Err(e) = wtr.write_record([&host.hostname, &host.description]) {
-            let error = format!("Failed to write CSV record: {}", e);
-            debug_log(
-                "ERROR",
-                "CSV_OPERATIONS",
-                &error,
-                Some(&format!(
-                    "CSV write error for host {}: {:?}",
-                    host.hostname, e
-                )),
-            );
-            return Err(error);
-        }
-    }
-
-    if let Err(e) = wtr.flush() {
-        let error = format!("Failed to flush CSV writer: {}", e);
-        debug_log(
-            "ERROR",
-            "CSV_OPERATIONS",
-            &error,
-            Some(&format!("CSV flush error: {:?}", e)),
-        );
-        return Err(error);
-    }
-
-    debug_log(
-        "INFO",
-        "LDAP_SCAN",
-        &format!(
-            "Successfully completed scan and wrote {} hosts to CSV",
-            hosts.len()
-        ),
-        Some(&format!("Total hosts written: {}", hosts.len())),
-    );
-
-    // Emit event to notify all windows that hosts list has been updated
-    if let Some(main_window) = app_handle.get_webview_window("main") {
-        let _ = main_window.emit("hosts-updated", ());
-    }
+    // Set hosts window to always on top during scan
     if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
-        let _ = hosts_window.emit("hosts-updated", ());
+        let _ = hosts_window.set_always_on_top(true);
     }
 
-    Ok(format!(
-        "Successfully found {} Windows Server(s).",
-        hosts.len()
-    ))
+    // Get credentials
+    let credentials = commands::get_stored_credentials().await?.ok_or_else(|| {
+        "No stored credentials found. Please save your domain credentials in the login window first."
+            .to_string()
+    })?;
+
+    // Perform LDAP scan using core module
+    let result = core::ldap::scan_domain_for_servers(&domain, &server, &credentials)
+        .await
+        .map_err(|e| e.to_string());
+
+    // Reset window always on top
+    if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
+        let _ = hosts_window.set_always_on_top(false);
+    }
+
+    // Write results to CSV if successful
+    if let Ok(scan_result) = &result {
+        let csv_path = commands::hosts::get_hosts_csv_path()?;
+        let mut wtr = csv::WriterBuilder::new()
+            .from_path(&csv_path)
+            .map_err(|e| format!("Failed to create CSV writer: {}", e))?;
+
+        wtr.write_record(["hostname", "description"])
+            .map_err(|e| format!("Failed to write CSV header: {}", e))?;
+
+        for host in &scan_result.hosts {
+            wtr.write_record([&host.hostname, &host.description])
+                .map_err(|e| format!("Failed to write CSV record: {}", e))?;
+        }
+
+        wtr.flush()
+            .map_err(|e| format!("Failed to flush CSV writer: {}", e))?;
+
+        // Emit UI events
+        if let Some(main_window) = app_handle.get_webview_window("main") {
+            let _ = main_window.emit("hosts-updated", ());
+        }
+        if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
+            let _ = hosts_window.emit("hosts-updated", ());
+        }
+
+        Ok(format!(
+            "Successfully found {} Windows Server(s).",
+            scan_result.count
+        ))
+    } else {
+        result.map(|r| format!("Successfully found {} Windows Server(s).", r.count))
+    }
 }
 
 
 
+/// Tauri command to reset the application to factory defaults.
+///
+/// This is a thin wrapper that uses the WindowsCredentialManager adapter to delete credentials safely.
+///
+/// # Side Effects
+/// - Deletes all QuickConnect credentials from Windows Credential Manager
+/// - Deletes all TERMSRV/* credentials
+/// - Deletes all RDP files in %APPDATA%\QuickConnect\Connections
+/// - Clears hosts.csv
+/// - Deletes recent_connections.json
 #[tauri::command]
 async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, String> {
     debug_log(
@@ -1266,8 +607,9 @@ async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, Strin
     );
 
     let mut report = String::from("=== QuickConnect Application Reset ===\n\n");
+    let cred_manager = WindowsCredentialManager::new();
 
-    // 1. Delete all QuickConnect credentials
+    // 1. Delete global credentials
     match commands::delete_credentials().await {
         Ok(_) => {
             report.push_str("✓ Deleted global QuickConnect credentials\n");
@@ -1275,102 +617,32 @@ async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, Strin
         }
         Err(e) => {
             report.push_str(&format!("✗ Failed to delete global credentials: {}\n", e));
-            debug_log(
-                "ERROR",
-                "RESET",
-                "Failed to delete global credentials",
-                Some(&e),
-            );
         }
     }
 
-    // 2. Enumerate and delete all TERMSRV/* credentials
-    unsafe {
-        let filter: Vec<u16> = OsStr::new("TERMSRV/*")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let mut count: u32 = 0;
-        let mut pcreds: *mut *mut CREDENTIALW = std::ptr::null_mut();
-
-        match CredEnumerateW(
-            PCWSTR::from_raw(filter.as_ptr()),
-            CRED_ENUMERATE_FLAGS(0),
-            &mut count,
-            &mut pcreds as *mut *mut *mut CREDENTIALW,
-        ) {
-            Ok(_) => {
-                debug_log(
-                    "INFO",
-                    "RESET",
-                    &format!("Found {} TERMSRV credentials to delete", count),
-                    None,
-                );
-                report.push_str(&format!("\nFound {} RDP host credentials:\n", count));
-
-                // Iterate through credentials and delete them
-                for i in 0..count {
-                    let cred_ptr = *pcreds.offset(i as isize);
-                    let cred = &*cred_ptr;
-
-                    if let Ok(target_name) = PWSTR::from_raw(cred.TargetName.0).to_string() {
-                        report.push_str(&format!("  - {}\n", target_name));
-
-                        let target_name_wide: Vec<u16> = OsStr::new(&target_name)
-                            .encode_wide()
-                            .chain(std::iter::once(0))
-                            .collect();
-
-                        match CredDeleteW(
-                            PCWSTR::from_raw(target_name_wide.as_ptr()),
-                            CRED_TYPE_GENERIC,
-                            0,
-                        ) {
-                            Ok(_) => {
-                                debug_log(
-                                    "INFO",
-                                    "RESET",
-                                    &format!("Deleted credential: {}", target_name),
-                                    None,
-                                );
-                            }
-                            Err(e) => {
-                                report.push_str(&format!("    ✗ Failed to delete: {:?}\n", e));
-                                debug_log(
-                                    "ERROR",
-                                    "RESET",
-                                    &format!("Failed to delete {}", target_name),
-                                    Some(&format!("{:?}", e)),
-                                );
-                            }
-                        }
-                    }
+    // 2. Delete all TERMSRV/* credentials using adapter
+    match cred_manager.list_with_prefix("TERMSRV/") {
+        Ok(targets) => {
+            let count = targets.len();
+            report.push_str(&format!("\nFound {} RDP host credentials:\n", count));
+            for target in &targets {
+                report.push_str(&format!("  - {}\n", target));
+                if let Err(e) = cred_manager.delete(target) {
+                    report.push_str(&format!("    ✗ Failed to delete: {}\n", e));
                 }
-
-                report.push_str(&format!("✓ Processed {} RDP host credentials\n", count));
             }
-            Err(e) => {
-                report.push_str(&format!(
-                    "✗ No TERMSRV credentials found or error: {:?}\n",
-                    e
-                ));
-                debug_log(
-                    "INFO",
-                    "RESET",
-                    "No TERMSRV credentials found",
-                    Some(&format!("{:?}", e)),
-                );
-            }
+            report.push_str(&format!("✓ Processed {} RDP host credentials\n", count));
+        }
+        Err(e) => {
+            report.push_str(&format!("✗ Failed to enumerate TERMSRV credentials: {}\n", e));
         }
     }
 
-    // 3. Delete all RDP files in AppData\Roaming\QuickConnect\Connections
+    // 3. Delete all RDP files
     if let Ok(appdata_dir) = std::env::var("APPDATA") {
         let connections_dir = PathBuf::from(appdata_dir)
             .join("QuickConnect")
             .join("Connections");
-
         report.push_str(&format!("\nRDP Files in {:?}:\n", connections_dir));
 
         if connections_dir.exists() {
@@ -1379,64 +651,25 @@ async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, Strin
                     let mut deleted_count = 0;
                     for entry in entries.flatten() {
                         let path = entry.path();
-                        if path.extension().and_then(|s| s.to_str()) == Some("rdp") {
-                            match std::fs::remove_file(&path) {
-                                Ok(_) => {
-                                    report.push_str(&format!(
-                                        "  ✓ Deleted: {:?}\n",
-                                        path.file_name().unwrap_or_default()
-                                    ));
-                                    deleted_count += 1;
-                                    debug_log(
-                                        "INFO",
-                                        "RESET",
-                                        &format!("Deleted RDP file: {:?}", path),
-                                        None,
-                                    );
-                                }
-                                Err(e) => {
-                                    report.push_str(&format!(
-                                        "  ✗ Failed to delete {:?}: {}\n",
-                                        path.file_name().unwrap_or_default(),
-                                        e
-                                    ));
-                                    debug_log(
-                                        "ERROR",
-                                        "RESET",
-                                        &format!("Failed to delete RDP file: {:?}", path),
-                                        Some(&format!("{}", e)),
-                                    );
-                                }
-                            }
+                        if path.extension().and_then(|s| s.to_str()) == Some("rdp")
+                            && std::fs::remove_file(&path).is_ok()
+                        {
+                            deleted_count += 1;
                         }
                     }
                     report.push_str(&format!("✓ Deleted {} RDP files\n", deleted_count));
                 }
                 Err(e) => {
                     report.push_str(&format!("✗ Failed to read connections directory: {}\n", e));
-                    debug_log(
-                        "ERROR",
-                        "RESET",
-                        "Failed to read connections directory",
-                        Some(&format!("{}", e)),
-                    );
                 }
             }
-        } else {
-            report.push_str("  (Connections directory does not exist)\n");
         }
     }
 
     // 4. Delete hosts.csv
     match commands::delete_all_hosts(app_handle).await {
-        Ok(_) => {
-            report.push_str("\n✓ Cleared hosts.csv\n");
-            debug_log("INFO", "RESET", "Cleared hosts.csv", None);
-        }
-        Err(e) => {
-            report.push_str(&format!("\n✗ Failed to clear hosts.csv: {}\n", e));
-            debug_log("ERROR", "RESET", "Failed to clear hosts.csv", Some(&e));
-        }
+        Ok(_) => report.push_str("\n✓ Cleared hosts.csv\n"),
+        Err(e) => report.push_str(&format!("\n✗ Failed to clear hosts.csv: {}\n", e)),
     }
 
     // 5. Delete recent_connections.json
@@ -1444,25 +677,11 @@ async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, Strin
         let recent_file = PathBuf::from(appdata_dir)
             .join("QuickConnect")
             .join("recent_connections.json");
-
         if recent_file.exists() {
             match std::fs::remove_file(&recent_file) {
-                Ok(_) => {
-                    report.push_str("✓ Deleted recent connections history\n");
-                    debug_log("INFO", "RESET", "Deleted recent_connections.json", None);
-                }
-                Err(e) => {
-                    report.push_str(&format!("✗ Failed to delete recent connections: {}\n", e));
-                    debug_log(
-                        "ERROR",
-                        "RESET",
-                        "Failed to delete recent_connections.json",
-                        Some(&format!("{}", e)),
-                    );
-                }
+                Ok(_) => report.push_str("✓ Deleted recent connections history\n"),
+                Err(e) => report.push_str(&format!("✗ Failed to delete recent connections: {}\n", e)),
             }
-        } else {
-            report.push_str("✓ No recent connections to delete\n");
         }
     }
 
@@ -1470,57 +689,22 @@ async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, Strin
     report.push_str("The application has been reset to its initial state.\n");
     report.push_str("Please restart the application.\n");
 
-    debug_log("WARN", "RESET", "Application reset completed", None);
-
     Ok(report)
 }
 
 const REGISTRY_RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const APP_NAME: &str = "QuickConnect";
 
+/// Tauri command to check if autostart is enabled.
+///
+/// Uses WindowsRegistry adapter to safely check registry without unsafe blocks.
 #[tauri::command]
 fn check_autostart() -> Result<bool, String> {
-    unsafe {
-        let key_path: Vec<u16> = OsStr::new(REGISTRY_RUN_KEY)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let mut hkey = HKEY::default();
-
-        // Open the registry key
-        let result = RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR::from_raw(key_path.as_ptr()),
-            0,
-            KEY_READ,
-            &mut hkey as *mut HKEY,
-        );
-
-        if result.is_err() {
-            return Ok(false);
-        }
-
-        let value_name: Vec<u16> = OsStr::new(APP_NAME)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let mut data_size: u32 = 0;
-
-        // Query the value to check if it exists
-        let query_result = RegQueryValueExW(
-            hkey,
-            PCWSTR::from_raw(value_name.as_ptr()),
-            None,
-            None,
-            None,
-            Some(&mut data_size),
-        );
-
-        let _ = RegCloseKey(hkey);
-
-        Ok(query_result.is_ok())
+    let registry = WindowsRegistry::new();
+    match registry.read_string(REGISTRY_RUN_KEY, APP_NAME) {
+        Ok(Some(_)) => Ok(true),
+        Ok(None) => Ok(false),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -1539,175 +723,65 @@ fn toggle_autostart() -> Result<bool, String> {
     }
 }
 
+/// Enables autostart using WindowsRegistry adapter.
+///
+/// # Side Effects
+/// - Writes executable path to HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 fn enable_autostart() -> Result<(), String> {
-    unsafe {
-        // Get the current executable path
-        let exe_path =
-            std::env::current_exe().map_err(|e| format!("Failed to get executable path: {}", e))?;
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get executable path: {}", e))?;
+    let exe_path_str = exe_path.to_string_lossy().to_string();
 
-        let exe_path_str = exe_path.to_string_lossy().to_string();
+    debug_log(
+        "INFO",
+        "AUTOSTART",
+        &format!("Enabling autostart with path: {}", exe_path_str),
+        None,
+    );
 
-        debug_log(
-            "INFO",
-            "AUTOSTART",
-            &format!("Enabling autostart with path: {}", exe_path_str),
-            Some(&format!("Executable path: {}", exe_path_str)),
-        );
+    let registry = WindowsRegistry::new();
+    registry
+        .write_string(REGISTRY_RUN_KEY, APP_NAME, &exe_path_str)
+        .map_err(|e| e.to_string())?;
 
-        let key_path: Vec<u16> = OsStr::new(REGISTRY_RUN_KEY)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let mut hkey = HKEY::default();
-
-        // Open the registry key with write access
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR::from_raw(key_path.as_ptr()),
-            0,
-            KEY_WRITE,
-            &mut hkey as *mut HKEY,
-        )
-        .map_err(|e| format!("Failed to open registry key: {:?}", e))?;
-
-        let value_name: Vec<u16> = OsStr::new(APP_NAME)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let value_data: Vec<u16> = OsStr::new(&exe_path_str)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        // Set the registry value
-        let result = RegSetValueExW(
-            hkey,
-            PCWSTR::from_raw(value_name.as_ptr()),
-            0,
-            REG_SZ,
-            Some(value_data.align_to::<u8>().1),
-        );
-
-        let _ = RegCloseKey(hkey);
-
-        result.map_err(|e| format!("Failed to set registry value: {:?}", e))?;
-
-        debug_log(
-            "INFO",
-            "AUTOSTART",
-            "Autostart enabled successfully",
-            Some(&format!("Registry value set for {}", APP_NAME)),
-        );
-        Ok(())
-    }
+    debug_log("INFO", "AUTOSTART", "Autostart enabled successfully", None);
+    Ok(())
 }
 
+/// Disables autostart using WindowsRegistry adapter.
+///
+/// # Side Effects
+/// - Deletes value from HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 fn disable_autostart() -> Result<(), String> {
-    unsafe {
-        debug_log("INFO", "AUTOSTART", "Disabling autostart", None);
+    debug_log("INFO", "AUTOSTART", "Disabling autostart", None);
 
-        let key_path: Vec<u16> = OsStr::new(REGISTRY_RUN_KEY)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
+    let registry = WindowsRegistry::new();
+    registry
+        .delete_value(REGISTRY_RUN_KEY, APP_NAME)
+        .map_err(|e| e.to_string())?;
 
-        let mut hkey = HKEY::default();
-
-        // Open the registry key with write access
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR::from_raw(key_path.as_ptr()),
-            0,
-            KEY_WRITE,
-            &mut hkey as *mut HKEY,
-        )
-        .map_err(|e| format!("Failed to open registry key: {:?}", e))?;
-
-        let value_name: Vec<u16> = OsStr::new(APP_NAME)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        // Delete the registry value
-        let result = RegDeleteValueW(hkey, PCWSTR::from_raw(value_name.as_ptr()));
-
-        let _ = RegCloseKey(hkey);
-
-        result.map_err(|e| format!("Failed to delete registry value: {:?}", e))?;
-
-        debug_log(
-            "INFO",
-            "AUTOSTART",
-            "Autostart disabled successfully",
-            Some(&format!("Registry value deleted for {}", APP_NAME)),
-        );
-        Ok(())
-    }
+    debug_log("INFO", "AUTOSTART", "Autostart disabled successfully", None);
+    Ok(())
 }
 
+/// Tauri command to get the Windows system theme.
+///
+/// Uses WindowsRegistry adapter to read theme setting without unsafe blocks.
 #[tauri::command]
 fn get_windows_theme() -> Result<String, String> {
-    unsafe {
-        // Windows theme is stored in the registry at:
-        // HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize
-        // Value: AppsUseLightTheme (0 = dark, 1 = light)
-
-        let key_path: Vec<u16> =
-            OsStr::new("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-
-        let mut hkey = HKEY::default();
-
-        // Open the registry key
-        let result = RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR::from_raw(key_path.as_ptr()),
-            0,
-            KEY_READ,
-            &mut hkey as *mut HKEY,
-        );
-
-        if result.is_err() {
-            // If we can't read the registry, default to dark theme
-            return Ok("dark".to_string());
-        }
-
-        let value_name: Vec<u16> = OsStr::new("AppsUseLightTheme")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let mut data_type = REG_VALUE_TYPE::default();
-        let mut data: u32 = 0;
-        let mut data_size: u32 = std::mem::size_of::<u32>() as u32;
-
-        // Query the value
-        let query_result = RegQueryValueExW(
-            hkey,
-            PCWSTR::from_raw(value_name.as_ptr()),
-            None,
-            Some(&mut data_type),
-            Some(&mut data as *mut u32 as *mut u8),
-            Some(&mut data_size),
-        );
-
-        let _ = RegCloseKey(hkey);
-
-        if query_result.is_ok() {
-            // 0 = dark theme, 1 (or any other value) = light theme
-            if data == 0 {
+    let registry = WindowsRegistry::new();
+    let key_path = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+    
+    match registry.read_dword(key_path, "AppsUseLightTheme") {
+        Ok(Some(value)) => {
+            // Value is 0 for dark, 1 for light
+            if value == 0 {
                 Ok("dark".to_string())
             } else {
                 Ok("light".to_string())
             }
-        } else {
-            // Default to dark if we can't read the value
-            Ok("dark".to_string())
         }
+        _ => Ok("dark".to_string()), // Default to dark
     }
 }
 

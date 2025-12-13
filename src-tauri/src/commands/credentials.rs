@@ -13,7 +13,7 @@ use crate::infra::debug_log;
 /// The WindowsCredentialManager is created only once on first access
 /// and reused for all subsequent credential operations.
 static CREDENTIAL_MANAGER: once_cell::sync::Lazy<WindowsCredentialManager> =
-    once_cell::sync::Lazy::new(|| WindowsCredentialManager::new());
+    once_cell::sync::Lazy::new(WindowsCredentialManager::new);
 
 /// Saves global QuickConnect credentials
 ///

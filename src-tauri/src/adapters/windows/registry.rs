@@ -44,6 +44,18 @@ pub trait RegistryAdapter: Send + Sync {
     /// * `key_path` - Registry key path
     /// * `value_name` - Name of the value to delete
     fn delete_value(&self, key_path: &str, value_name: &str) -> Result<(), AppError>;
+
+    /// Reads a DWORD (32-bit integer) value from the registry
+    ///
+    /// # Arguments
+    /// * `key_path` - Registry key path
+    /// * `value_name` - Name of the value to read
+    ///
+    /// # Returns
+    /// * `Ok(Some(value))` - If value exists
+    /// * `Ok(None)` - If value doesn't exist
+    /// * `Err(AppError)` - If an error occurred
+    fn read_dword(&self, key_path: &str, value_name: &str) -> Result<Option<u32>, AppError>;
 }
 
 /// Windows implementation of RegistryAdapter
@@ -245,6 +257,55 @@ impl RegistryAdapter for WindowsRegistry {
 
             let _ = RegCloseKey(hkey);
             Ok(())
+        }
+    }
+
+    fn read_dword(&self, key_path: &str, value_name: &str) -> Result<Option<u32>, AppError> {
+        unsafe {
+            let key_path_wide: Vec<u16> = OsStr::new(key_path)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+
+            let mut hkey = HKEY::default();
+
+            match RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR::from_raw(key_path_wide.as_ptr()),
+                0,
+                KEY_READ,
+                &mut hkey,
+            ) {
+                Ok(_) => {
+                    let value_name_wide: Vec<u16> = OsStr::new(value_name)
+                        .encode_wide()
+                        .chain(std::iter::once(0))
+                        .collect();
+
+                    let mut data: u32 = 0;
+                    let mut data_size = std::mem::size_of::<u32>() as u32;
+                    let mut reg_type = REG_VALUE_TYPE::default();
+
+                    match RegQueryValueExW(
+                        hkey,
+                        PCWSTR::from_raw(value_name_wide.as_ptr()),
+                        None,
+                        Some(&mut reg_type),
+                        Some(&mut data as *mut u32 as *mut u8),
+                        Some(&mut data_size),
+                    ) {
+                        Ok(_) => {
+                            let _ = RegCloseKey(hkey);
+                            Ok(Some(data))
+                        }
+                        Err(_) => {
+                            let _ = RegCloseKey(hkey);
+                            Ok(None)
+                        }
+                    }
+                }
+                Err(_) => Ok(None),
+            }
         }
     }
 }

@@ -359,7 +359,8 @@ export async function showCustomDialog(options: CustomDialogOptions): Promise<bo
 
     // Create modal box
     const modalBox = document.createElement('div');
-    modalBox.className = 'modal-box';
+    modalBox.className = 'modal-box max-w-lg min-w-[400px]';
+    modalBox.style.maxHeight = 'none';
     modalBox.setAttribute('data-testid', 'custom-dialog');
 
     // Add icon

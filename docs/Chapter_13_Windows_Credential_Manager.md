@@ -100,7 +100,7 @@ Let's examine how QuickConnect saves credentials to Windows Credential Manager.
 > - **Safety**: All unsafe code isolated in one module
 > - **Maintainability**: Single source of truth for Windows API interactions
 > 
-> See [Appendix A, Section A.4](Appendix_A_Complete_QuickRDP_Walkthrough.md#a4-adapters-layer-windows-api-abstractions) for the production implementation. The examples below are simplified for learning purposes.
+> See [Appendix A, Section A.4](Appendix_A_Complete_QuickConnect_Walkthrough.md#a4-adapters-layer-windows-api-abstractions) for the production implementation. The examples below are simplified for learning purposes.
 
 ### The save_credentials Command
 

@@ -855,9 +855,9 @@ pub fn run() {
             });
             
             // Register global shortcuts
-            app.global_shortcut().on_shortcut("Ctrl+Shift+Alt+R", |app, _| {
-                // Reset application
-            })?;
+            // QuickConnect uses global shortcuts for window visibility (e.g. Ctrl+Shift+R).
+            // The destructive reset shortcut (Ctrl+Shift+Alt+R) is handled in the frontend
+            // as a per-window keydown listener with double-confirmation.
             
             Ok(())
         })

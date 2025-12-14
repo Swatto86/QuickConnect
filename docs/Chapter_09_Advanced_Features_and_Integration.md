@@ -671,10 +671,21 @@ window.addEventListener('keydown', async (e) => {
         );
         
         if (!confirmed) return;
+
+        const confirmedAgain = confirm(
+            'FINAL CONFIRMATION:\n\n' +
+            'This will COMPLETELY reset QuickConnect and permanently delete your data.\n\n' +
+            'Press OK to proceed with the reset, or Cancel to abort.'
+        );
+
+        if (!confirmedAgain) return;
         
         try {
             const result = await invoke<string>("reset_application");
             alert(result);
+
+            // Return to the initial credentials screen
+            await invoke('show_login_window');
             
             const shouldQuit = confirm(
                 'Reset complete!\n\n' +
@@ -695,116 +706,41 @@ window.addEventListener('keydown', async (e) => {
 ### Backend Implementation
 
 ```rust
+// Production implementation (adapter-based, no direct Win32 calls here):
+// see src-tauri/src/commands/system.rs
 #[tauri::command]
-async fn reset_application() -> Result<String, String> {
-    debug_log("WARN", "RESET", "Application reset initiated", None);
+pub async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, String> {
+    use crate::adapters::{CredentialManager, WindowsCredentialManager};
+    use crate::infra::debug_log;
+
+    debug_log(
+        "WARN",
+        "RESET",
+        "Application reset initiated - deleting all credentials and data",
+        None,
+    );
 
     let mut report = String::from("=== QuickConnect Application Reset ===\n\n");
+    let cred_manager = WindowsCredentialManager::new();
 
-    // 1. Delete global QuickConnect credentials
-    match delete_credentials().await {
-        Ok(_) => {
-            report.push_str("✓ Deleted global credentials\n");
-            debug_log("INFO", "RESET", "Deleted global credentials", None);
-        }
-        Err(e) => {
-            report.push_str(&format!("✗ Failed to delete credentials: {}\n", e));
-        }
-    }
+    // 1) Delete global QuickConnect credentials
+    let _ = crate::commands::delete_credentials().await;
 
-    // 2. Enumerate and delete all TERMSRV/* credentials
-    unsafe {
-        let filter: Vec<u16> = OsStr::new("TERMSRV/*")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let mut count: u32 = 0;
-        let mut pcreds: *mut *mut CREDENTIALW = std::ptr::null_mut();
-
-        match CredEnumerateW(
-            PCWSTR::from_raw(filter.as_ptr()),
-            CRED_ENUMERATE_FLAGS(0),
-            &mut count,
-            &mut pcreds as *mut *mut *mut CREDENTIALW,
-        ) {
-            Ok(_) => {
-                report.push_str(&format!("\nFound {} RDP host credentials:\n", count));
-
-                for i in 0..count {
-                    let cred_ptr = *pcreds.offset(i as isize);
-                    let cred = &*cred_ptr;
-
-                    if let Ok(target_name) = PWSTR::from_raw(cred.TargetName.0).to_string() {
-                        report.push_str(&format!("  - {}\n", target_name));
-
-                        let target_name_wide: Vec<u16> = OsStr::new(&target_name)
-                            .encode_wide()
-                            .chain(std::iter::once(0))
-                            .collect();
-
-                        let _ = CredDeleteW(
-                            PCWSTR::from_raw(target_name_wide.as_ptr()),
-                            CRED_TYPE_GENERIC,
-                            0,
-                        );
-                    }
-                }
-                report.push_str(&format!("✓ Processed {} credentials\n", count));
-            }
-            Err(_) => {
-                report.push_str("✓ No TERMSRV credentials found\n");
-            }
+    // 2) Delete all TERMSRV/* credentials (per-host RDP credentials)
+    if let Ok(targets) = cred_manager.list_with_prefix("TERMSRV/") {
+        for target in targets {
+            let _ = cred_manager.delete(&target);
         }
     }
 
-    // 3. Delete all RDP files
-    if let Ok(appdata_dir) = std::env::var("APPDATA") {
-        let connections_dir = PathBuf::from(appdata_dir)
-            .join("QuickConnect")
-            .join("Connections");
+    // 3) Delete all saved RDP files in %APPDATA%\QuickConnect\Connections
+    // 4) Clear hosts list (hosts.csv)
+    // 5) Delete recent_connections.json
+    // (see the full implementation for detailed reporting)
 
-        if connections_dir.exists() {
-            match std::fs::read_dir(&connections_dir) {
-                Ok(entries) => {
-                    let mut deleted_count = 0;
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|s| s.to_str()) == Some("rdp") {
-                            if std::fs::remove_file(&path).is_ok() {
-                                deleted_count += 1;
-                            }
-                        }
-                    }
-                    report.push_str(&format!("\n✓ Deleted {} RDP files\n", deleted_count));
-                }
-                Err(_) => {}
-            }
-        }
-    }
-
-    // 4. Clear hosts.csv
-    match delete_all_hosts().await {
-        Ok(_) => report.push_str("\n✓ Cleared hosts.csv\n"),
-        Err(_) => {}
-    }
-
-    // 5. Delete recent connections
-    if let Ok(appdata_dir) = std::env::var("APPDATA") {
-        let recent_file = PathBuf::from(appdata_dir)
-            .join("QuickConnect")
-            .join("recent_connections.json");
-
-        if recent_file.exists() {
-            if std::fs::remove_file(&recent_file).is_ok() {
-                report.push_str("✓ Deleted recent connections\n");
-            }
-        }
-    }
+    let _ = crate::commands::delete_all_hosts(app_handle).await;
 
     report.push_str("\n=== Reset Complete ===\n");
-    debug_log("WARN", "RESET", "Application reset completed", None);
-
     Ok(report)
 }
 ```

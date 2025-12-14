@@ -536,9 +536,9 @@ QuickConnect includes a comprehensive application reset feature that clears all 
 ///
 /// This command:
 /// 1. Deletes all stored credentials from Windows Credential Manager
-/// 2. Deletes the hosts.csv file
+/// 2. Clears the hosts list (hosts.csv)
 /// 3. Deletes recent_connections.json
-/// 4. Clears theme preferences
+/// 4. Deletes all saved RDP connection files (*.rdp)
 /// 5. Returns a detailed report of what was deleted
 ///
 /// # Returns
@@ -547,7 +547,8 @@ QuickConnect includes a comprehensive application reset feature that clears all 
 ///
 /// # Security Note
 /// This is a destructive operation and should require user confirmation.
-/// The secret keyboard shortcut Ctrl+Shift+Alt+R triggers this.
+/// In QuickConnect, the UI binds the secret keyboard shortcut Ctrl+Shift+Alt+R
+/// in each window (frontend keydown listener) and then invokes this command.
 #[tauri::command]
 pub async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, String> {
     use crate::adapters::{CredentialManager, WindowsCredentialManager};
@@ -664,7 +665,9 @@ async function resetApplication() {
   
   // Second confirmation for safety
   const doubleConfirmed = confirm(
-    'Are you ABSOLUTELY sure? This is permanent!'
+    'FINAL CONFIRMATION:\n\n' +
+    'This will COMPLETELY reset QuickConnect and permanently delete your data.\n\n' +
+    'Press OK to proceed with the reset, or Cancel to abort.'
   );
   
   if (!doubleConfirmed) return;
@@ -675,9 +678,19 @@ async function resetApplication() {
     
     // Show detailed report
     alert(report);
-    
-    // Restart application
-    await invoke('quit_app');
+
+    // Return to the initial credentials screen
+    await invoke('show_login_window');
+
+    // Optional restart
+    const shouldQuit = confirm(
+      'Reset complete!\n\n' +
+      'It is recommended to restart the application now.\n\n' +
+      'Do you want to quit the application?'
+    );
+    if (shouldQuit) {
+      await invoke('quit_app');
+    }
     
   } catch (error) {
     alert(`Reset failed: ${error}`);

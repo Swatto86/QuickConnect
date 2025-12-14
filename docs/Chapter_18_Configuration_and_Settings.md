@@ -1173,7 +1173,7 @@ Extend the theme system to support multiple languages.
 ---
 
 **Next Chapter Preview:**  
-In Chapter 19, we'll explore keyboard shortcuts and global hotkeys, learning how to implement Ctrl+Shift+R to show windows and the secret Ctrl+Shift+Alt+R reset shortcut. We'll cover the `tauri-plugin-global-shortcut` and best practices for keyboard input handling.
+In Chapter 19, we'll explore keyboard shortcuts and global hotkeys, learning how QuickConnect implements `Ctrl+Shift+R` using `tauri-plugin-global-shortcut` to show/focus windows, and how the destructive `Ctrl+Shift+Alt+R` reset shortcut is implemented as a per-window keyboard handler with double confirmation.
 
 **Chapter Progress:** ✅ Completed  
 **Pages:** 52

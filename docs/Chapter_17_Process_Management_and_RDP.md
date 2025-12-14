@@ -461,7 +461,7 @@ Now let's examine the complete RDP launch process from QuickConnect's `launch_rd
 > - [adapters/windows/credential_manager.rs](../src-tauri/src/adapters/windows/credential_manager.rs) - Credential Manager trait abstraction (268 lines)
 > - [core/rdp.rs](../src-tauri/src/core/rdp.rs) - RDP file generation and username parsing helpers
 > 
-> See [Appendix A](Appendix_A_Complete_QuickRDP_Walkthrough.md) for a complete walkthrough of the modular architecture. The educational example below demonstrates the concepts but should not be copied directly into production code.
+> See [Appendix A](Appendix_A_Complete_QuickConnect_Walkthrough.md) for a complete walkthrough of the modular architecture. The educational example below demonstrates the concepts but should not be copied directly into production code.
 
 ### Complete Launch Flow (Educational Example)
 

@@ -153,6 +153,9 @@ These requirements guide all development decisions and must be maintained throug
 - Multiple theme options
 - Intuitive host management with descriptions
 - Modal-based host editing
+- Custom styled dialogs for confirmations and alerts (no browser popups)
+- Smooth animations and transitions
+- Keyboard-accessible dialogs (ESC to dismiss)
 
 ### 🔧 Advanced Features
 - **Per-host credentials**: Set different credentials for specific servers

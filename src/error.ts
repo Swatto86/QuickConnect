@@ -55,7 +55,7 @@ import {
   formatErrorsForExport,
 } from "./utils/errors";
 import { escapeHtml } from "./utils/validation";
-import { showNotification as showNotificationUtil } from "./utils/ui";
+import { showNotification as showNotificationUtil, showCustomDialog } from \"./utils/ui\";
 
 // ErrorData interface is now imported from utils/errors
 
@@ -327,12 +327,19 @@ function showNotification(message: string, isError = false) {
 // (escapeHtml is imported directly from utils/validation)
 
 // Clear all errors
-clearBtn.addEventListener("click", () => {
+clearBtn.addEventListener(\"click\", async () => {
   if (errors.length === 0) return;
 
-  if (
-    confirm(`Are you sure you want to clear all ${errors.length} error(s)?`)
-  ) {
+  const confirmed = await showCustomDialog({
+    title: 'Clear All Errors',
+    message: `Are you sure you want to clear all ${errors.length} error(s)?`,
+    type: 'confirm',
+    icon: 'warning',
+    confirmText: 'Clear All',
+    cancelText: 'Cancel'
+  });
+
+  if (confirmed) {
     errors = [];
     filteredErrors = [];
     searchQuery = "";

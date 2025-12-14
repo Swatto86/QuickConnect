@@ -54,15 +54,15 @@ export function showNotification(options: NotificationOptions | string): HTMLEle
   const notification = document.createElement('div');
 
   const positionClasses =
-    position === 'top' ? 'top-2' : 'bottom-2';
+    position === 'top' ? 'top-8' : 'bottom-8';
 
   const colorClasses = getNotificationColorClasses(type);
 
   notification.className = `
     fixed ${positionClasses} left-1/2 transform -translate-x-1/2
     ${colorClasses}
-    text-white px-4 py-2 rounded-md shadow-lg
-    text-center min-w-[200px] whitespace-nowrap
+    text-white px-6 py-3 rounded-lg shadow-xl
+    text-center min-w-[250px] whitespace-nowrap
     text-sm z-50 transition-opacity duration-300
   `.trim().replace(/\s+/g, ' ');
 
@@ -299,4 +299,214 @@ export function focusInput(input: HTMLInputElement | null, selectAll = false): v
   if (selectAll) {
     input.select();
   }
+}
+
+/**
+ * Custom dialog types
+ */
+export type DialogType = 'confirm' | 'alert';
+export type DialogIcon = 'warning' | 'info' | 'error' | 'success';
+
+export interface CustomDialogOptions {
+  title: string;
+  message: string;
+  type: DialogType;
+  icon?: DialogIcon;
+  confirmText?: string;
+  cancelText?: string;
+}
+
+/**
+ * Shows a custom modal dialog that matches the DaisyUI theme
+ * Replaces native confirm() and alert() with styled modals
+ * 
+ * @param options - Dialog configuration options
+ * @returns Promise<boolean> - true if confirmed/OK, false if cancelled
+ * 
+ * @example
+ * // Confirmation dialog
+ * const confirmed = await showCustomDialog({
+ *   title: 'Delete Host',
+ *   message: 'Are you sure you want to delete this host?',
+ *   type: 'confirm',
+ *   icon: 'warning'
+ * });
+ * 
+ * @example
+ * // Alert dialog
+ * await showCustomDialog({
+ *   title: 'Validation Error',
+ *   message: 'Hostname must not exceed 253 characters',
+ *   type: 'alert',
+ *   icon: 'error'
+ * });
+ */
+export async function showCustomDialog(options: CustomDialogOptions): Promise<boolean> {
+  const {
+    title,
+    message,
+    type,
+    icon = 'info',
+    confirmText = type === 'confirm' ? 'Confirm' : 'OK',
+    cancelText = 'Cancel'
+  } = options;
+
+  return new Promise((resolve) => {
+    // Create modal backdrop
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal modal-open';
+    backdrop.setAttribute('data-testid', 'custom-dialog-backdrop');
+
+    // Create modal box
+    const modalBox = document.createElement('div');
+    modalBox.className = 'modal-box';
+    modalBox.setAttribute('data-testid', 'custom-dialog');
+
+    // Add icon
+    const iconElement = document.createElement('div');
+    iconElement.className = 'flex justify-center mb-4';
+    const iconSvg = getDialogIcon(icon);
+    iconElement.innerHTML = iconSvg;
+
+    // Add title
+    const titleElement = document.createElement('h3');
+    titleElement.className = 'font-bold text-lg mb-4 text-center';
+    titleElement.textContent = title;
+
+    // Add message (preserve line breaks)
+    const messageElement = document.createElement('p');
+    messageElement.className = 'py-4 whitespace-pre-wrap text-center';
+    messageElement.textContent = message;
+
+    // Add buttons container
+    const actionsContainer = document.createElement('div');
+    actionsContainer.className = 'modal-action justify-center';
+
+    // Create buttons based on type
+    if (type === 'confirm') {
+      const cancelButton = document.createElement('button');
+      cancelButton.className = 'btn btn-ghost';
+      cancelButton.textContent = cancelText;
+      cancelButton.setAttribute('data-testid', 'dialog-cancel-btn');
+      cancelButton.addEventListener('click', () => {
+        closeDialog(false);
+      });
+
+      const confirmButton = document.createElement('button');
+      confirmButton.className = icon === 'warning' || icon === 'error' 
+        ? 'btn btn-error' 
+        : 'btn btn-primary';
+      confirmButton.textContent = confirmText;
+      confirmButton.setAttribute('data-testid', 'dialog-confirm-btn');
+      confirmButton.addEventListener('click', () => {
+        closeDialog(true);
+      });
+
+      actionsContainer.appendChild(cancelButton);
+      actionsContainer.appendChild(confirmButton);
+    } else {
+      const okButton = document.createElement('button');
+      okButton.className = 'btn btn-primary';
+      okButton.textContent = confirmText;
+      okButton.setAttribute('data-testid', 'dialog-ok-btn');
+      okButton.addEventListener('click', () => {
+        closeDialog(true);
+      });
+
+      actionsContainer.appendChild(okButton);
+    }
+
+    // Assemble modal
+    modalBox.appendChild(iconElement);
+    modalBox.appendChild(titleElement);
+    modalBox.appendChild(messageElement);
+    modalBox.appendChild(actionsContainer);
+    backdrop.appendChild(modalBox);
+
+    // Handle ESC key
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeDialog(false);
+      }
+    };
+
+    // Handle backdrop click
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) {
+        closeDialog(false);
+      }
+    });
+
+    // Close dialog function
+    function closeDialog(result: boolean) {
+      // Remove event listener
+      document.removeEventListener('keydown', handleEscape);
+
+      // Fade out animation
+      backdrop.classList.add('opacity-0');
+      backdrop.style.transition = 'opacity 0.2s ease-out';
+
+      setTimeout(() => {
+        backdrop.remove();
+        resolve(result);
+      }, 200);
+    }
+
+    // Add to DOM with fade-in
+    backdrop.style.opacity = '0';
+    document.body.appendChild(backdrop);
+
+    // Trigger fade-in
+    setTimeout(() => {
+      backdrop.style.opacity = '1';
+      backdrop.style.transition = 'opacity 0.2s ease-in';
+    }, 10);
+
+    // Add keyboard listener
+    document.addEventListener('keydown', handleEscape);
+
+    // Focus confirm/ok button for keyboard accessibility
+    const primaryButton = actionsContainer.querySelector('[data-testid="dialog-confirm-btn"], [data-testid="dialog-ok-btn"]') as HTMLButtonElement;
+    if (primaryButton) {
+      setTimeout(() => primaryButton.focus(), 100);
+    }
+  });
+}
+
+/**
+ * Gets the SVG icon for a dialog type
+ * @param icon - The icon type
+ * @returns SVG string
+ */
+function getDialogIcon(icon: DialogIcon): string {
+  const iconMap: Record<DialogIcon, string> = {
+    warning: `
+      <svg class="w-16 h-16 text-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+      </svg>
+    `,
+    error: `
+      <svg class="w-16 h-16 text-error" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+          d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    `,
+    info: `
+      <svg class="w-16 h-16 text-info" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    `,
+    success: `
+      <svg class="w-16 h-16 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    `
+  };
+
+  return iconMap[icon] || iconMap.info;
 }

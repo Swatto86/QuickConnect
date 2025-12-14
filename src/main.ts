@@ -29,8 +29,7 @@ import {
 import { validateCredentials } from "./utils/validation";
 import {
   showNotification as showNotificationUtil,
-  setButtonDisabled,
-} from "./utils/ui";
+  setButtonDisabled,  showCustomDialog,} from "./utils/ui";
 
 interface StoredCredentials {
   username: string;
@@ -654,26 +653,34 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (e.ctrlKey && e.shiftKey && e.altKey && e.key === "R") {
       e.preventDefault();
 
-      const confirmed = confirm(
-        "⚠️ WARNING: Application Reset ⚠️\n\n" +
-          "This will permanently delete:\n" +
-          "• All saved credentials\n" +
-          "• All RDP connection files\n" +
-          "• All saved hosts\n" +
-          "• Recent connection history\n\n" +
-          "This action CANNOT be undone!\n\n" +
-          "Are you sure you want to continue?",
-      );
+      const confirmed = await showCustomDialog({
+        title: '⚠️ WARNING: Application Reset ⚠️',
+        message: 'This will permanently delete:\n' +
+          '• All saved credentials\n' +
+          '• All RDP connection files\n' +
+          '• All saved hosts\n' +
+          '• Recent connection history\n\n' +
+          'This action CANNOT be undone!\n\n' +
+          'Are you sure you want to continue?',
+        type: 'confirm',
+        icon: 'warning',
+        confirmText: 'Continue',
+        cancelText: 'Cancel'
+      });
 
       if (!confirmed) {
         return;
       }
 
-      const confirmedAgain = confirm(
-        "FINAL CONFIRMATION:\n\n" +
-          "This will COMPLETELY reset QuickConnect and permanently delete your data.\n\n" +
-          "Press OK to proceed with the reset, or Cancel to abort.",
-      );
+      const confirmedAgain = await showCustomDialog({
+        title: 'FINAL CONFIRMATION',
+        message: 'This will COMPLETELY reset QuickConnect and permanently delete your data.\n\n' +
+          'Click Confirm to proceed with the reset, or Cancel to abort.',
+        type: 'confirm',
+        icon: 'error',
+        confirmText: 'Reset Now',
+        cancelText: 'Cancel'
+      });
 
       if (!confirmedAgain) {
         return;
@@ -681,7 +688,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       try {
         const result = await invoke<string>("reset_application");
-        alert(result);
+        await showCustomDialog({
+          title: 'Application Reset',
+          message: result,
+          type: 'alert',
+          icon: 'success'
+        });
 
         // Return to the initial credentials screen
         try {
@@ -691,17 +703,26 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
 
         // Recommend restarting the application
-        const shouldQuit = confirm(
-          "Reset complete!\n\n" +
-            "It is recommended to restart the application now.\n\n" +
-            "Do you want to quit the application?",
-        );
+        const shouldQuit = await showCustomDialog({
+          title: 'Reset Complete',
+          message: 'It is recommended to restart the application now.\n\n' +
+            'Do you want to quit the application?',
+          type: 'confirm',
+          icon: 'info',
+          confirmText: 'Quit Now',
+          cancelText: 'Continue'
+        });
 
         if (shouldQuit) {
           await invoke("quit_app");
         }
       } catch (err) {
-        alert("Failed to reset application: " + err);
+        await showCustomDialog({
+          title: 'Reset Failed',
+          message: 'Failed to reset application: ' + err,
+          type: 'alert',
+          icon: 'error'
+        });
       }
     }
   });

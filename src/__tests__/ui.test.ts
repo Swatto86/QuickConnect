@@ -78,7 +78,7 @@ describe("showNotification", () => {
 
   it("should apply bottom position by default", () => {
     const notification = showNotification("Bottom");
-    expect(notification.className).toContain("bottom-2");
+    expect(notification.className).toContain("bottom-8");
   });
 
   it("should apply top position when specified", () => {
@@ -86,7 +86,7 @@ describe("showNotification", () => {
       message: "Top",
       position: "top",
     });
-    expect(notification.className).toContain("top-2");
+    expect(notification.className).toContain("top-8");
   });
 
   it("should auto-remove after duration", async () => {
@@ -582,5 +582,248 @@ describe("focusInput", () => {
     const selectSpy = vi.spyOn(input, "select");
     focusInput(input);
     expect(selectSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("showCustomDialog", () => {
+  let showCustomDialog: (options: any) => Promise<boolean>;
+
+  beforeEach(async () => {
+    document.body.innerHTML = "";
+    // Import the function dynamically
+    const module = await import("../utils/ui");
+    showCustomDialog = module.showCustomDialog;
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+    vi.clearAllTimers();
+  });
+
+  it("should create a modal dialog", async () => {
+    const dialogPromise = showCustomDialog({
+      title: "Test Dialog",
+      message: "Test message",
+      type: "alert",
+      icon: "info",
+    });
+
+    // Dialog should be in DOM
+    const backdrop = document.querySelector('[data-testid="custom-dialog-backdrop"]');
+    expect(backdrop).toBeTruthy();
+
+    // Close dialog by clicking OK
+    const okBtn = document.querySelector('[data-testid="dialog-ok-btn"]') as HTMLButtonElement;
+    okBtn?.click();
+
+    const result = await dialogPromise;
+    expect(result).toBe(true);
+  });
+
+  it("should display title and message", async () => {
+    const dialogPromise = showCustomDialog({
+      title: "Custom Title",
+      message: "Custom Message",
+      type: "alert",
+    });
+
+    const dialog = document.querySelector('[data-testid="custom-dialog"]');
+    expect(dialog?.textContent).toContain("Custom Title");
+    expect(dialog?.textContent).toContain("Custom Message");
+
+    const okBtn = document.querySelector('[data-testid="dialog-ok-btn"]') as HTMLButtonElement;
+    okBtn?.click();
+    await dialogPromise;
+  });
+
+  it("should show OK button for alert type", async () => {
+    const dialogPromise = showCustomDialog({
+      title: "Alert",
+      message: "Alert message",
+      type: "alert",
+    });
+
+    const okBtn = document.querySelector('[data-testid="dialog-ok-btn"]');
+    const cancelBtn = document.querySelector('[data-testid="dialog-cancel-btn"]');
+    const confirmBtn = document.querySelector('[data-testid="dialog-confirm-btn"]');
+
+    expect(okBtn).toBeTruthy();
+    expect(cancelBtn).toBeFalsy();
+    expect(confirmBtn).toBeFalsy();
+
+    (okBtn as HTMLButtonElement)?.click();
+    await dialogPromise;
+  });
+
+  it("should show Confirm and Cancel buttons for confirm type", async () => {
+    const dialogPromise = showCustomDialog({
+      title: "Confirm",
+      message: "Confirm message",
+      type: "confirm",
+    });
+
+    const okBtn = document.querySelector('[data-testid="dialog-ok-btn"]');
+    const cancelBtn = document.querySelector('[data-testid="dialog-cancel-btn"]');
+    const confirmBtn = document.querySelector('[data-testid="dialog-confirm-btn"]');
+
+    expect(okBtn).toBeFalsy();
+    expect(cancelBtn).toBeTruthy();
+    expect(confirmBtn).toBeTruthy();
+
+    (confirmBtn as HTMLButtonElement)?.click();
+    await dialogPromise;
+  });
+
+  it("should return true when confirm button clicked", async () => {
+    const dialogPromise = showCustomDialog({
+      title: "Confirm",
+      message: "Confirm message",
+      type: "confirm",
+    });
+
+    const confirmBtn = document.querySelector('[data-testid="dialog-confirm-btn"]') as HTMLButtonElement;
+    confirmBtn?.click();
+
+    const result = await dialogPromise;
+    expect(result).toBe(true);
+  });
+
+  it("should return false when cancel button clicked", async () => {
+    const dialogPromise = showCustomDialog({
+      title: "Confirm",
+      message: "Confirm message",
+      type: "confirm",
+    });
+
+    const cancelBtn = document.querySelector('[data-testid="dialog-cancel-btn"]') as HTMLButtonElement;
+    cancelBtn?.click();
+
+    const result = await dialogPromise;
+    expect(result).toBe(false);
+  });
+
+  it("should return false when backdrop clicked", async () => {
+    const dialogPromise = showCustomDialog({
+      title: "Confirm",
+      message: "Confirm message",
+      type: "confirm",
+    });
+
+    const backdrop = document.querySelector('[data-testid="custom-dialog-backdrop"]') as HTMLElement;
+    backdrop?.click();
+
+    const result = await dialogPromise;
+    expect(result).toBe(false);
+  });
+
+  it("should close on ESC key", async () => {
+    vi.useFakeTimers();
+
+    const dialogPromise = showCustomDialog({
+      title: "Confirm",
+      message: "Confirm message",
+      type: "confirm",
+    });
+
+    // Simulate ESC key press
+    const escapeEvent = new KeyboardEvent("keydown", { key: "Escape" });
+    document.dispatchEvent(escapeEvent);
+
+    // Allow time for animation
+    vi.advanceTimersByTime(300);
+
+    const result = await dialogPromise;
+    expect(result).toBe(false);
+
+    vi.useRealTimers();
+  });
+
+  it("should use custom button text", async () => {
+    const dialogPromise = showCustomDialog({
+      title: "Custom Buttons",
+      message: "Test",
+      type: "confirm",
+      confirmText: "Yes Please",
+      cancelText: "No Thanks",
+    });
+
+    const confirmBtn = document.querySelector('[data-testid="dialog-confirm-btn"]');
+    const cancelBtn = document.querySelector('[data-testid="dialog-cancel-btn"]');
+
+    expect(confirmBtn?.textContent).toBe("Yes Please");
+    expect(cancelBtn?.textContent).toBe("No Thanks");
+
+    (confirmBtn as HTMLButtonElement)?.click();
+    await dialogPromise;
+  });
+
+  it("should apply error button style for warning/error icons in confirm dialogs", async () => {
+    const dialogPromise = showCustomDialog({
+      title: "Warning",
+      message: "Warning message",
+      type: "confirm",
+      icon: "warning",
+    });
+
+    const confirmBtn = document.querySelector('[data-testid="dialog-confirm-btn"]');
+    expect(confirmBtn?.classList.contains("btn-error")).toBe(true);
+
+    (confirmBtn as HTMLButtonElement)?.click();
+    await dialogPromise;
+  });
+
+  it("should apply primary button style for info icons in confirm dialogs", async () => {
+    const dialogPromise = showCustomDialog({
+      title: "Info",
+      message: "Info message",
+      type: "confirm",
+      icon: "info",
+    });
+
+    const confirmBtn = document.querySelector('[data-testid="dialog-confirm-btn"]');
+    expect(confirmBtn?.classList.contains("btn-primary")).toBe(true);
+
+    (confirmBtn as HTMLButtonElement)?.click();
+    await dialogPromise;
+  });
+
+  it("should preserve line breaks in message", async () => {
+    const dialogPromise = showCustomDialog({
+      title: "Multi-line",
+      message: "Line 1\nLine 2\nLine 3",
+      type: "alert",
+    });
+
+    const dialog = document.querySelector('[data-testid="custom-dialog"]');
+    const messageEl = dialog?.querySelector(".whitespace-pre-wrap");
+    expect(messageEl?.textContent).toBe("Line 1\nLine 2\nLine 3");
+
+    const okBtn = document.querySelector('[data-testid="dialog-ok-btn"]') as HTMLButtonElement;
+    okBtn?.click();
+    await dialogPromise;
+  });
+
+  it("should remove dialog from DOM after closing", async () => {
+    vi.useFakeTimers();
+
+    const dialogPromise = showCustomDialog({
+      title: "Test",
+      message: "Test",
+      type: "alert",
+    });
+
+    expect(document.querySelector('[data-testid="custom-dialog-backdrop"]')).toBeTruthy();
+
+    const okBtn = document.querySelector('[data-testid="dialog-ok-btn"]') as HTMLButtonElement;
+    okBtn?.click();
+
+    // Wait for animation
+    vi.advanceTimersByTime(300);
+
+    await dialogPromise;
+
+    expect(document.querySelector('[data-testid="custom-dialog-backdrop"]')).toBeFalsy();
+
+    vi.useRealTimers();
   });
 });

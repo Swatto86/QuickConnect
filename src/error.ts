@@ -55,7 +55,7 @@ import {
   formatErrorsForExport,
 } from "./utils/errors";
 import { escapeHtml } from "./utils/validation";
-import { showNotification as showNotificationUtil, showCustomDialog } from \"./utils/ui\";
+import { showNotification as showNotificationUtil, showCustomDialog } from "./utils/ui";
 
 // ErrorData interface is now imported from utils/errors
 
@@ -327,7 +327,7 @@ function showNotification(message: string, isError = false) {
 // (escapeHtml is imported directly from utils/validation)
 
 // Clear all errors
-clearBtn.addEventListener(\"click\", async () => {
+clearBtn.addEventListener("click", async () => {
   if (errors.length === 0) return;
 
   const confirmed = await showCustomDialog({

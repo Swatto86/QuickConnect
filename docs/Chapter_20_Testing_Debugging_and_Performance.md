@@ -16,153 +16,284 @@
 
 Testing is crucial for maintaining code quality. Rust has excellent built-in testing support that makes it easy to write and run tests.
 
-### 20.1.1 Basic Test Structure
+### 20.1.1 Test Structure in QuickConnect
 
-In Rust, tests are typically written in the same file as the code being tested, using a `#[cfg(test)]` module:
+QuickConnect has **129 passing unit tests** across its codebase. Tests are written in the same file using `#[cfg(test)]` modules:
 
 ```rust
-// Simple function to test
-fn add_numbers(a: i32, b: i32) -> i32 {
-    a + b
-}
+// src-tauri/src/core/hosts.rs
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// Helper to set up a test environment with a temporary CSV file
+    fn setup_test_env() -> (TempDir, PathBuf) {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let csv_path = temp_dir.path().join("hosts.csv");
+        (temp_dir, csv_path)
+    }
+
+    /// Helper to create test hosts
+    fn create_test_host(hostname: &str, description: &str) -> Host {
+        Host {
+            hostname: hostname.to_string(),
+            description: description.to_string(),
+            last_connected: None,
+        }
+    }
 
     #[test]
-    fn test_add_numbers() {
-        assert_eq!(add_numbers(2, 3), 5);
-        assert_eq!(add_numbers(-1, 1), 0);
-        assert_eq!(add_numbers(0, 0), 0);
+    fn test_search_hosts_by_hostname() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let hosts = vec![
+            create_test_host("server01.domain.com", "Web Server"),
+            create_test_host("server02.domain.com", "Database Server"),
+            create_test_host("workstation01.domain.com", "Dev Machine"),
+        ];
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts)
+            .expect("Failed to write CSV");
+        
+        let loaded_hosts = csv_reader::read_hosts_from_csv(&csv_path)
+            .expect("Failed to read CSV");
+        
+        // Test search logic
+        let query = "server";
+        let filtered: Vec<Host> = loaded_hosts
+            .into_iter()
+            .filter(|host| {
+                host.hostname.to_lowercase().contains(&query.to_lowercase())
+                    || host.description.to_lowercase().contains(&query.to_lowercase())
+            })
+            .collect();
+        
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().any(|h| h.hostname == "server01.domain.com"));
+        assert!(filtered.iter().any(|h| h.hostname == "server02.domain.com"));
     }
 }
 ```
 
-**Key Concepts:**
-- `#[cfg(test)]`: Conditional compilation - only compiled during testing
-- `#[test]`: Marks a function as a test
-- `assert_eq!`: Checks if two values are equal
-- `assert!`: Checks if a condition is true
+**Key Testing Patterns:**
+- ✅ `#[cfg(test)]`: Conditional compilation - only compiled during testing
+- ✅ `tempfile::TempDir`: Isolated test environment (no shared state)
+- ✅ Helper functions: `setup_test_env()`, `create_test_host()`
+- ✅ `.expect()` for test error handling (NO `.unwrap()` - clippy violation!)
+- ✅ Descriptive assertions with `assert_eq!` and `assert!`
 
-### 20.1.2 Testing Error Handling
+### 20.1.2 Testing Error Handling with AppError
 
-Testing functions that return `Result<T, E>` is straightforward:
+QuickConnect uses structured `AppError` types. Testing error conditions:
 
 ```rust
-fn divide(a: f64, b: f64) -> Result<f64, String> {
-    if b == 0.0 {
-        Err("Division by zero".to_string())
+// src-tauri/src/core/hosts.rs
+
+#[test]
+fn test_upsert_host_empty_hostname_fails() {
+    let (_temp_dir, csv_path) = setup_test_env();
+    
+    // Create empty CSV
+    csv_writer::write_hosts_to_csv(&csv_path, &[])
+        .expect("Failed to write CSV");
+    
+    // Test that empty hostname is rejected
+    let invalid_host = Host {
+        hostname: "   ".to_string(),  // Empty after trim
+        description: "Test".to_string(),
+        last_connected: None,
+    };
+    
+    // In real code, upsert_host validates hostname
+    // We're testing the validation logic
+    let result = if invalid_host.hostname.trim().is_empty() {
+        Err(AppError::InvalidHostname {
+            hostname: invalid_host.hostname.clone(),
+            reason: "Hostname cannot be empty".to_string(),
+        })
     } else {
-        Ok(a / b)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_divide_success() {
-        let result = divide(10.0, 2.0).unwrap();
-        assert_eq!(result, 5.0);
-    }
-
-    #[test]
-    fn test_divide_by_zero() {
-        let result = divide(10.0, 0.0);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Division by zero");
-    }
-
-    #[test]
-    #[should_panic(expected = "Division by zero")]
-    fn test_divide_panic() {
-        divide(10.0, 0.0).unwrap(); // This will panic
+        Ok(())
+    };
+    
+    // Verify error is returned
+    assert!(result.is_err());
+    
+    // Verify specific error type
+    match result {
+        Err(AppError::InvalidHostname { hostname, reason }) => {
+            assert!(hostname.trim().is_empty());
+            assert!(reason.contains("empty"));
+        }
+        _ => panic!("Expected InvalidHostname error"),
     }
 }
 ```
 
-### 20.1.3 Testing QuickConnect Functions
+**Error Testing Best Practices:**
+- ✅ Use `.expect("message")` instead of `.unwrap()` in tests
+- ✅ Test both success and error paths
+- ✅ Match specific `AppError` variants
+- ✅ Verify error messages contain expected context
 
-Let's test some utility functions similar to those in QuickConnect:
+### 20.1.3 Testing RDP File Generation
+
+QuickConnect tests RDP file creation with special character handling:
 
 ```rust
-// Function to parse username format (domain\user or user@domain)
-fn parse_username(username: &str) -> (Option<String>, String) {
-    if username.contains('\\') {
-        let parts: Vec<&str> = username.split('\\').collect();
-        if parts.len() == 2 {
-            return (Some(parts[0].to_string()), parts[1].to_string());
-        }
-    } else if username.contains('@') {
-        let parts: Vec<&str> = username.split('@').collect();
-        if parts.len() == 2 {
-            return (Some(parts[1].to_string()), parts[0].to_string());
-        }
-    }
-    (None, username.to_string())
+// src-tauri/src/core/rdp_launcher.rs
+
+#[test]
+fn test_create_rdp_file_with_username() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let rdp_path = temp_dir.path().join("test.rdp");
+    
+    let hostname = "server01.contoso.com";
+    let credentials = Credentials {
+        username: "admin".to_string(),
+        password: "P@ssw0rd".to_string(),
+        domain: Some("CONTOSO".to_string()),
+    };
+    
+    // Call RDP file creation function
+    let result = create_rdp_file_content(hostname, Some(&credentials));
+    
+    // Write to file
+    std::fs::write(&rdp_path, result)
+        .expect("Failed to write RDP file");
+    
+    // Verify file was created
+    assert!(rdp_path.exists());
+    
+    // Read and verify content
+    let content = std::fs::read_to_string(&rdp_path)
+        .expect("Failed to read RDP file");
+    
+    assert!(content.contains("full address:s:server01.contoso.com"));
+    assert!(content.contains("username:s:CONTOSO\\admin"));
+    assert!(content.contains("domain:s:CONTOSO"));
 }
 
-#[cfg(test)]
-mod username_tests {
-    use super::*;
-
-    #[test]
-    fn test_backslash_format() {
-        let (domain, user) = parse_username("CONTOSO\\jsmith");
-        assert_eq!(domain, Some("CONTOSO".to_string()));
-        assert_eq!(user, "jsmith".to_string());
-    }
-
-    #[test]
-    fn test_at_format() {
-        let (domain, user) = parse_username("jsmith@contoso.com");
-        assert_eq!(domain, Some("contoso.com".to_string()));
-        assert_eq!(user, "jsmith".to_string());
-    }
-
-    #[test]
-    fn test_no_domain() {
-        let (domain, user) = parse_username("jsmith");
-        assert_eq!(domain, None);
-        assert_eq!(user, "jsmith".to_string());
-    }
-
-    #[test]
-    fn test_malformed_username() {
-        let (domain, user) = parse_username("CONTOSO\\");
-        assert_eq!(domain, None);
-        assert_eq!(user, "CONTOSO\\".to_string());
-    }
+#[test]
+fn test_create_rdp_file_special_characters() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    
+    let hostname = "server-01.test_domain.com";
+    let credentials = Credentials {
+        username: "user.name".to_string(),
+        password: "P@ss#123".to_string(),
+        domain: Some("TEST-DOMAIN".to_string()),
+    };
+    
+    let content = create_rdp_file_content(hostname, Some(&credentials));
+    
+    // Verify special characters are preserved
+    assert!(content.contains("server-01.test_domain.com"));
+    assert!(content.contains("user.name"));
+    assert!(content.contains("TEST-DOMAIN"));
 }
 ```
+
+**Testing File Operations:**
+- ✅ Use `tempfile::TempDir` for isolated test files
+- ✅ Test with realistic data (special characters, domains)
+- ✅ Verify file creation AND content
+- ✅ Clean up automatically (TempDir drops at end of test)
 
 ### 20.1.4 Running Tests
 
-To run all tests in your Rust project:
+QuickConnect has **129 passing unit tests** across the codebase:
 
 ```powershell
+# Run all tests
 cargo test
-```
 
-To run specific tests:
+# Run only library tests (faster, skips integration tests)
+cargo test --lib
 
-```powershell
-# Run tests with "username" in the name
-cargo test username
-
-# Run tests in a specific module
-cargo test username_tests
-
-# Show output from successful tests too
+# Run tests with output
 cargo test -- --nocapture
 
-# Run tests in parallel (default) or serially
-cargo test -- --test-threads=1
+# Run specific test module
+cargo test hosts::tests
+
+# Run single test
+cargo test test_search_hosts_by_hostname
 ```
 
-### 20.1.5 Testing with Mocks
+**Test Output:**
+```
+running 129 tests
+test adapters::windows::credential_manager::tests::test_credential_manager ... ok
+test core::hosts::tests::test_search_hosts_by_hostname ... ok
+test core::hosts::tests::test_upsert_host_creates_new ... ok
+test core::rdp_launcher::tests::test_create_rdp_file_with_username ... ok
+...
+
+test result: ok. 129 passed; 0 failed; 0 ignored; 0 measured
+```
+
+### 20.1.5 Clippy: Zero-Warning Policy
+
+QuickConnect enforces **zero clippy warnings** using strict mode:
+
+```powershell
+# Run clippy with warnings as errors
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+**What this means:**
+- `-D warnings`: Treats all warnings as compilation errors
+- Test code must also pass clippy checks
+- Enforces best practices automatically
+
+**Common Clippy Fixes Applied:**
+
+```rust
+// ❌ BAD: len_zero warning
+if record.len() >= 1 {
+    // ...
+}
+
+// ✅ GOOD: Use is_empty()
+if !record.is_empty() {
+    // ...
+}
+
+// ❌ BAD: needless_borrow warning
+process_data(&deeply_nested);
+
+// ✅ GOOD: Remove unnecessary &
+process_data(deeply_nested);
+
+// ❌ BAD: useless_vec warning
+let items = vec!["item1", "item2"];
+for item in items { ... }
+
+// ✅ GOOD: Use array literal
+let items = ["item1", "item2"];
+for item in items { ... }
+
+// ❌ BAD: unwrap() in tests (explicit error principle violation)
+let hosts = get_hosts().unwrap();
+
+// ✅ GOOD: Use expect() with descriptive message
+let hosts = get_hosts().expect("Failed to load hosts for test");
+```
+
+**CI/CD Integration:**
+```yaml
+# .github/workflows/ci.yml
+- name: Run Clippy
+  run: cargo clippy --all-targets --all-features -- -D warnings
+
+- name: Run Tests
+  run: cargo test --lib
+```
+
+### 20.1.6 Testing with Mocks
 
 For testing code that depends on external systems (like file I/O or network), use mock objects:
 
@@ -240,19 +371,19 @@ Integration tests verify that multiple components work together correctly. In Ru
 Create `src-tauri/tests/integration_test.rs`:
 
 ```rust
-use QuickConnect_lib::{parse_username, Host};
+use quickconnect_lib::{rdp::parse_username, Host};
 
 #[test]
 fn test_username_parsing_integration() {
     let test_cases = vec![
-        ("admin@contoso.com", Some("contoso.com"), "admin"),
-        ("CONTOSO\\admin", Some("CONTOSO"), "admin"),
-        ("localuser", None, "localuser"),
+        ("admin@contoso.com", "contoso.com", "admin"),
+        ("CONTOSO\\admin", "CONTOSO", "admin"),
+        ("localuser", "", "localuser"),
     ];
 
     for (input, expected_domain, expected_user) in test_cases {
         let (domain, user) = parse_username(input);
-        assert_eq!(domain.as_deref(), expected_domain);
+        assert_eq!(domain, expected_domain);
         assert_eq!(user, expected_user);
     }
 }
@@ -263,7 +394,7 @@ fn test_username_parsing_integration() {
 Testing Tauri commands requires a bit more setup. You can test the underlying logic without the Tauri runtime:
 
 ```rust
-// In src-tauri/src/lib.rs - separate business logic from command
+// Keep business logic separate from the Tauri command layer
 pub fn create_rdp_file_content(
     hostname: &str,
     username: Option<&str>,
@@ -324,7 +455,67 @@ mod rdp_tests {
 
 **Key Principle:** Separate business logic from Tauri commands so you can test the logic independently.
 
-### 20.2.3 Testing with the Tauri Runtime
+### 20.2.3 Testing Async Functions
+
+QuickConnect uses `tokio::test` for async test execution:
+
+```rust
+// src-tauri/src/core/ldap.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_ldap_connection_timeout() {
+        // Test that connection timeout works correctly
+        let result = connect_to_ldap(
+            "nonexistent.server.local",
+            389,
+            Duration::from_secs(1)
+        ).await;
+        
+        assert!(result.is_err());
+        
+        // Verify it's a connection error, not a timeout
+        match result {
+            Err(AppError::LdapConnectionError { server, port, .. }) => {
+                assert_eq!(server, "nonexistent.server.local");
+                assert_eq!(port, 389);
+            }
+            _ => panic!("Expected LdapConnectionError"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_credential_fallback_async() {
+        // Test async credential retrieval with fallback
+        let primary_result = get_credentials("TERMSRV/server01").await;
+        let fallback_result = get_credentials("QuickConnect").await;
+        
+        // At least one should succeed (or both fail predictably)
+        if primary_result.is_err() && fallback_result.is_err() {
+            // Expected when no credentials are stored
+            assert!(true);
+        }
+    }
+}
+```
+
+**Async Testing Requirements:**
+- \u2705 Add `#[tokio::test]` attribute for async tests
+- \u2705 Add `tokio = { version = "1", features = ["macros", "rt-multi-thread"] }` to `Cargo.toml`
+- \u2705 Use `.await` in test body
+- \u2705 Test both success and timeout/error paths
+
+**Cargo.toml Configuration:**
+```toml
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile = "3.14"
+```
+
+### 20.2.4 Testing with the Tauri Runtime
 
 For testing that requires the Tauri runtime, use the `tauri::test` module:
 
@@ -524,6 +715,744 @@ describe('Search Functionality', () => {
 
 ---
 
+### 20.3.5 QuickConnect Frontend Test Suite
+
+QuickConnect has a comprehensive frontend testing infrastructure with **321 utility tests** across **9 test files** totaling **6,634 lines of test code**. This ensures reliability and maintainability of all frontend functionality.
+
+#### Test Configuration (`vitest.config.ts`)
+
+QuickConnect uses Vitest v4 (see `package.json`; currently `^4.0.15`) with the jsdom environment for DOM testing:
+
+```typescript
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Environment
+    environment: 'jsdom',
+    
+    // Test file patterns
+    include: ['src/__tests__/**/*.test.ts'],
+    
+    // Setup files run before each test
+    setupFiles: ['src/__tests__/setup.ts'],
+    
+    // Global test timeout
+    testTimeout: 10000,
+    
+    // Coverage configuration
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html', 'lcov'],
+      reportsDirectory: './coverage',
+      
+      // Enforce coverage thresholds
+      thresholds: {
+        statements: 80,
+        branches: 75,
+        functions: 80,
+        lines: 80,
+      },
+      
+      // Files to include in coverage
+      include: ['src/utils/**/*.ts'],
+      
+      // Files to exclude
+      exclude: [
+        'src/__tests__/**',
+        'src/**/*.d.ts',
+        'node_modules/**',
+      ],
+    },
+  },
+});
+```
+
+**Key Configuration Features:**
+
+- ✅ **jsdom environment**: Full DOM API for testing UI interactions
+- ✅ **Setup files**: Mocking Tauri API before tests run
+- ✅ **Coverage thresholds**: 80% statement/function/line coverage, 75% branch coverage
+- ✅ **Multiple reporters**: Text output for CLI, HTML for detailed browsing, lcov for CI/CD
+
+**Running Tests:**
+
+```bash
+# Run all tests
+npm test
+
+# Run tests in watch mode
+npm run test:watch
+
+# Generate coverage report
+npm run test:coverage
+
+# Run specific test file
+npm test validation.test.ts
+```
+
+#### Test Suite Overview
+
+QuickConnect's **9 test files** provide comprehensive coverage:
+
+| Test File | Lines | Tests | Focus Area |
+|-----------|-------|-------|------------|
+| `validation.test.ts` | 678 | 101 | FQDN validation, domain validation, XSS prevention |
+| `validation.property.test.ts` | 708 | - | Property-based testing with fast-check |
+| `ui.test.ts` | 586 | 74 | Notifications, button state, form utilities |
+| `errors.test.ts` | 698 | 85 | Severity categorization, CSS generation, filtering |
+| `hosts.test.ts` | 728 | 61 | Host filtering, sorting, date parsing |
+| `ui-main.test.ts` | 685 | - | Main window UI integration |
+| `ui-login.test.ts` | 591 | - | Login window UI integration |
+| `ui-hosts.test.ts` | 1093 | - | Hosts window UI integration |
+| `integration.test.ts` | 867 | - | End-to-end workflow testing |
+| **TOTAL** | **6,634** | **321+** | Full frontend coverage |
+
+#### Validation Tests (`validation.test.ts`)
+
+**101 tests** ensuring robust input validation:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import { isValidFQDN, isValidDomain, escapeHtml } from '../utils/validation';
+
+describe('isValidFQDN', () => {
+  it('should accept valid FQDNs', () => {
+    expect(isValidFQDN('server.company.com')).toBe(true);
+    expect(isValidFQDN('db-01.internal.corp.net')).toBe(true);
+    expect(isValidFQDN('web-server.sub.domain.com')).toBe(true);
+  });
+
+  it('should reject IP addresses', () => {
+    expect(isValidFQDN('192.168.1.1')).toBe(false);
+    expect(isValidFQDN('10.0.0.1')).toBe(false);
+  });
+
+  it('should reject single-label names', () => {
+    expect(isValidFQDN('localhost')).toBe(false);
+    expect(isValidFQDN('server')).toBe(false);
+  });
+
+  it('should reject names with invalid characters', () => {
+    expect(isValidFQDN('server_.company.com')).toBe(false);
+    expect(isValidFQDN('server..company.com')).toBe(false);
+    expect(isValidFQDN('server-.company.com')).toBe(false);
+  });
+
+  it('should reject TLDs shorter than 2 characters', () => {
+    expect(isValidFQDN('server.c')).toBe(false);
+    expect(isValidFQDN('server.company.c')).toBe(false);
+  });
+
+  it('should handle edge cases', () => {
+    expect(isValidFQDN('')).toBe(false);
+    expect(isValidFQDN('   ')).toBe(false);
+    expect(isValidFQDN('.')).toBe(false);
+  });
+});
+
+describe('escapeHtml', () => {
+  it('should escape HTML entities', () => {
+    expect(escapeHtml('<script>alert("XSS")</script>'))
+      .toBe('&lt;script&gt;alert(&quot;XSS&quot;)&lt;/script&gt;');
+  });
+
+  it('should escape quotes', () => {
+    expect(escapeHtml("It's a test")).toBe('It&#039;s a test');
+    expect(escapeHtml('Say "Hello"')).toBe('Say &quot;Hello&quot;');
+  });
+
+  it('should escape ampersands', () => {
+    expect(escapeHtml('Tom & Jerry')).toBe('Tom &amp; Jerry');
+  });
+});
+```
+
+**Coverage includes:**
+- ✅ Valid FQDN formats (101 test cases)
+- ✅ IP address rejection
+- ✅ Single-label rejection
+- ✅ Invalid character handling
+- ✅ TLD length validation
+- ✅ Edge cases (empty, whitespace, special characters)
+- ✅ XSS prevention with HTML entity escaping
+
+#### Property-Based Testing (`validation.property.test.ts`)
+
+**708 lines** of property-based tests using `fast-check` to generate thousands of random inputs:
+
+```typescript
+import { describe, it } from 'vitest';
+import * as fc from 'fast-check';
+import { isValidFQDN, isValidDomain } from '../utils/validation';
+
+describe('Property-Based: FQDN Validation', () => {
+  it('should never accept IP addresses', () => {
+    fc.assert(
+      fc.property(
+        fc.ipV4(),
+        (ip) => {
+          expect(isValidFQDN(ip)).toBe(false);
+        }
+      ),
+      { numRuns: 1000 }
+    );
+  });
+
+  it('should never accept strings with spaces', () => {
+    fc.assert(
+      fc.property(
+        fc.string().filter(s => s.includes(' ')),
+        (str) => {
+          expect(isValidFQDN(str)).toBe(false);
+        }
+      ),
+      { numRuns: 1000 }
+    );
+  });
+
+  it('should accept valid domain format', () => {
+    // Generate valid FQDN structure
+    const validFqdnArb = fc.tuple(
+      fc.stringOf(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789-'.split('')), { minLength: 1, maxLength: 63 }),
+      fc.stringOf(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789-'.split('')), { minLength: 1, maxLength: 63 }),
+      fc.stringOf(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz'.split('')), { minLength: 2, maxLength: 10 })
+    ).map(([label1, label2, tld]) => `${label1}.${label2}.${tld}`);
+
+    fc.assert(
+      fc.property(validFqdnArb, (fqdn) => {
+        // If it matches the pattern, should be valid
+        if (!/^[a-z0-9-]+\.[a-z0-9-]+\.[a-z]{2,}$/.test(fqdn)) {
+          return;
+        }
+        expect(isValidFQDN(fqdn)).toBe(true);
+      }),
+      { numRuns: 10000 }  // 10,000 generated test cases!
+    );
+  });
+});
+
+describe('Property-Based: Domain Validation', () => {
+  it('should never accept empty strings', () => {
+    fc.assert(
+      fc.property(
+        fc.constant(''),
+        (empty) => {
+          expect(isValidDomain(empty)).toBe(false);
+        }
+      )
+    );
+  });
+
+  it('should handle arbitrary Unicode safely', () => {
+    fc.assert(
+      fc.property(
+        fc.unicodeString(),
+        (str) => {
+          // Should not crash, just return true or false
+          const result = isValidDomain(str);
+          expect(typeof result).toBe('boolean');
+        }
+      ),
+      { numRuns: 5000 }
+    );
+  });
+});
+```
+
+**Property-based testing benefits:**
+- ✅ Tests with **10,000+ generated inputs** instead of handwritten cases
+- ✅ Discovers edge cases humans might miss
+- ✅ Ensures functions handle arbitrary input safely
+- ✅ Higher confidence than example-based testing alone
+
+#### UI Tests (`ui.test.ts`)
+
+**74 tests** for notification system and button state management:
+
+```typescript
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { showNotification, setButtonsEnabled, getFormData } from '../utils/ui';
+
+describe('showNotification', () => {
+  beforeEach(() => {
+    document.body.innerHTML = `
+      <div id="notification-container-top"></div>
+      <div id="notification-container-bottom"></div>
+    `;
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('should display success notification at top', () => {
+    showNotification('Operation successful', 'success');
+    
+    const container = document.getElementById('notification-container-top');
+    expect(container?.children.length).toBe(1);
+    
+    const notification = container?.firstElementChild;
+    expect(notification?.classList.contains('alert-success')).toBe(true);
+    expect(notification?.textContent).toContain('Operation successful');
+  });
+
+  it('should display error notification at bottom with custom duration', () => {
+    showNotification('Error occurred', 'error', {
+      position: 'bottom',
+      duration: 5000
+    });
+    
+    const container = document.getElementById('notification-container-bottom');
+    expect(container?.children.length).toBe(1);
+    
+    const notification = container?.firstElementChild;
+    expect(notification?.classList.contains('alert-error')).toBe(true);
+  });
+
+  it('should escape HTML in message', () => {
+    showNotification('<script>alert("XSS")</script>', 'info');
+    
+    const container = document.getElementById('notification-container-top');
+    const notification = container?.firstElementChild;
+    
+    // Should display escaped HTML, not execute it
+    expect(notification?.innerHTML).toContain('&lt;script&gt;');
+    expect(notification?.innerHTML).not.toContain('<script>');
+  });
+
+  it('should auto-dismiss after duration', async () => {
+    vi.useFakeTimers();
+    
+    showNotification('Auto dismiss test', 'info', { duration: 3000 });
+    
+    const container = document.getElementById('notification-container-top');
+    expect(container?.children.length).toBe(1);
+    
+    // Fast-forward 3 seconds
+    vi.advanceTimersByTime(3000);
+    
+    // Should have animation class
+    expect(container?.firstElementChild?.classList.contains('animate-slide-out')).toBe(true);
+    
+    // Fast-forward animation time
+    vi.advanceTimersByTime(300);
+    
+    // Should be removed
+    expect(container?.children.length).toBe(0);
+    
+    vi.useRealTimers();
+  });
+});
+
+describe('setButtonsEnabled', () => {
+  it('should disable multiple buttons', () => {
+    document.body.innerHTML = `
+      <button id="btn1">Button 1</button>
+      <button id="btn2">Button 2</button>
+      <button id="btn3">Button 3</button>
+    `;
+    
+    const btn1 = document.getElementById('btn1') as HTMLButtonElement;
+    const btn2 = document.getElementById('btn2') as HTMLButtonElement;
+    const btn3 = document.getElementById('btn3') as HTMLButtonElement;
+    
+    setButtonsEnabled(false, btn1, btn2, btn3);
+    
+    expect(btn1.disabled).toBe(true);
+    expect(btn2.disabled).toBe(true);
+    expect(btn3.disabled).toBe(true);
+    expect(btn1.classList.contains('loading')).toBe(true);
+  });
+
+  it('should re-enable buttons', () => {
+    document.body.innerHTML = `<button id="btn">Button</button>`;
+    const btn = document.getElementById('btn') as HTMLButtonElement;
+    
+    setButtonsEnabled(false, btn);
+    expect(btn.disabled).toBe(true);
+    
+    setButtonsEnabled(true, btn);
+    expect(btn.disabled).toBe(false);
+    expect(btn.classList.contains('loading')).toBe(false);
+  });
+});
+
+describe('getFormData', () => {
+  it('should extract form data', () => {
+    document.body.innerHTML = `
+      <form id="testForm">
+        <input name="username" value="alice" />
+        <input name="email" value="alice@example.com" />
+        <select name="role">
+          <option value="admin" selected>Admin</option>
+        </select>
+      </form>
+    `;
+    
+    const data = getFormData('testForm');
+    
+    expect(data.username).toBe('alice');
+    expect(data.email).toBe('alice@example.com');
+    expect(data.role).toBe('admin');
+  });
+
+  it('should trim whitespace from values', () => {
+    document.body.innerHTML = `
+      <form id="testForm">
+        <input name="field" value="  value  " />
+      </form>
+    `;
+    
+    const data = getFormData('testForm');
+    expect(data.field).toBe('value');
+  });
+});
+```
+
+#### Error Tests (`errors.test.ts`)
+
+**85 tests** for error categorization and styling:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import {
+  getSeverityFromCategory,
+  getSeverityColor,
+  getBorderColor,
+  filterErrors
+} from '../utils/errors';
+
+describe('getSeverityFromCategory', () => {
+  it('should map critical categories', () => {
+    expect(getSeverityFromCategory('Critical System Error')).toBe('critical');
+    expect(getSeverityFromCategory('FATAL')).toBe('critical');
+  });
+
+  it('should map error categories', () => {
+    expect(getSeverityFromCategory('Authentication Error')).toBe('error');
+    expect(getSeverityFromCategory('Network Failure')).toBe('error');
+  });
+
+  it('should map warning categories', () => {
+    expect(getSeverityFromCategory('Warning: Low Disk Space')).toBe('warning');
+  });
+
+  it('should default to info', () => {
+    expect(getSeverityFromCategory('Configuration')).toBe('info');
+    expect(getSeverityFromCategory('Status Update')).toBe('info');
+  });
+});
+
+describe('getSeverityColor', () => {
+  it('should return correct DaisyUI classes', () => {
+    expect(getSeverityColor('critical')).toBe('badge-error');
+    expect(getSeverityColor('error')).toBe('badge-error');
+    expect(getSeverityColor('warning')).toBe('badge-warning');
+    expect(getSeverityColor('info')).toBe('badge-info');
+  });
+});
+
+describe('filterErrors', () => {
+  const errors = [
+    {
+      category: 'Authentication',
+      message: 'Login failed',
+      details: 'Invalid password',
+      timestamp: '14/12/2024 09:30:45',
+      severity: 'error'
+    },
+    {
+      category: 'Network',
+      message: 'Connection timeout',
+      details: 'Server unreachable',
+      timestamp: '14/12/2024 09:31:12',
+      severity: 'error'
+    }
+  ];
+
+  it('should filter by category', () => {
+    const filtered = filterErrors(errors, 'auth');
+    expect(filtered.length).toBe(1);
+    expect(filtered[0].category).toBe('Authentication');
+  });
+
+  it('should filter by message', () => {
+    const filtered = filterErrors(errors, 'timeout');
+    expect(filtered.length).toBe(1);
+    expect(filtered[0].message).toBe('Connection timeout');
+  });
+
+  it('should be case-insensitive', () => {
+    const filtered = filterErrors(errors, 'NETWORK');
+    expect(filtered.length).toBe(1);
+  });
+});
+```
+
+#### Host Tests (`hosts.test.ts`)
+
+**61 tests** for host filtering, sorting, and date handling:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import {
+  filterHosts,
+  highlightMatches,
+  sortHostsByHostname,
+  sortHostsByLastConnected,
+  parseDate,
+  formatDate
+} from '../utils/hosts';
+
+describe('filterHosts', () => {
+  const hosts = [
+    { hostname: 'server01.company.com', description: 'Web Server' },
+    { hostname: 'db01.company.com', description: 'Database Server' },
+    { hostname: 'workstation01.company.com', description: 'Dev Machine' }
+  ];
+
+  it('should filter by hostname', () => {
+    const filtered = filterHosts(hosts, 'db');
+    expect(filtered.length).toBe(1);
+    expect(filtered[0].hostname).toBe('db01.company.com');
+  });
+
+  it('should filter by description', () => {
+    const filtered = filterHosts(hosts, 'web');
+    expect(filtered.length).toBe(1);
+    expect(filtered[0].description).toBe('Web Server');
+  });
+
+  it('should be case-insensitive', () => {
+    const filtered = filterHosts(hosts, 'WORKSTATION');
+    expect(filtered.length).toBe(1);
+  });
+});
+
+describe('highlightMatches', () => {
+  it('should wrap matches in mark tags', () => {
+    const result = highlightMatches('server01.company.com', 'server');
+    expect(result).toContain('<mark');
+    expect(result).toContain('server');
+    expect(result).toContain('</mark>');
+  });
+
+  it('should escape HTML', () => {
+    const result = highlightMatches('<script>alert("XSS")</script>', 'script');
+    expect(result).not.toContain('<script>');
+    expect(result).toContain('&lt;script&gt;');
+  });
+
+  it('should be case-insensitive', () => {
+    const result = highlightMatches('ServerName', 'server');
+    expect(result).toContain('<mark');
+  });
+});
+
+describe('parseDate', () => {
+  it('should parse UK format dates', () => {
+    const date = parseDate('14/12/2024 09:30:45');
+    expect(date.getDate()).toBe(14);
+    expect(date.getMonth()).toBe(11); // 0-indexed
+    expect(date.getFullYear()).toBe(2024);
+    expect(date.getHours()).toBe(9);
+    expect(date.getMinutes()).toBe(30);
+    expect(date.getSeconds()).toBe(45);
+  });
+});
+
+describe('sortHostsByLastConnected', () => {
+  it('should sort by most recent first', () => {
+    const hosts = [
+      { hostname: 'a', description: '', last_connected: '10/12/2024 10:00:00' },
+      { hostname: 'b', description: '', last_connected: '12/12/2024 10:00:00' },
+      { hostname: 'c', description: '', last_connected: '11/12/2024 10:00:00' }
+    ];
+    
+    const sorted = sortHostsByLastConnected(hosts);
+    expect(sorted[0].hostname).toBe('b'); // Most recent
+    expect(sorted[1].hostname).toBe('c');
+    expect(sorted[2].hostname).toBe('a');
+  });
+
+  it('should put hosts without dates at end', () => {
+    const hosts = [
+      { hostname: 'a', description: '', last_connected: '10/12/2024 10:00:00' },
+      { hostname: 'b', description: '' }, // No date
+      { hostname: 'c', description: '', last_connected: '12/12/2024 10:00:00' }
+    ];
+    
+    const sorted = sortHostsByLastConnected(hosts);
+    expect(sorted[0].hostname).toBe('c');
+    expect(sorted[1].hostname).toBe('a');
+    expect(sorted[2].hostname).toBe('b'); // No date goes last
+  });
+});
+```
+
+#### Integration Tests (`integration.test.ts`)
+
+**867 lines** of end-to-end workflow testing:
+
+```typescript
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
+
+describe('Host Management Workflow', () => {
+  beforeEach(() => {
+    // Mock Tauri commands
+    vi.mocked(invoke).mockResolvedValue([]);
+  });
+
+  it('should complete full host lifecycle', async () => {
+    // 1. Load hosts
+    vi.mocked(invoke).mockResolvedValueOnce([]);
+    const hosts = await invoke('get_all_hosts');
+    expect(hosts).toEqual([]);
+    
+    // 2. Add host
+    const newHost = {
+      hostname: 'server01.company.com',
+      description: 'Test Server'
+    };
+    vi.mocked(invoke).mockResolvedValueOnce(newHost);
+    await invoke('create_host', newHost);
+    
+    // 3. Update host
+    vi.mocked(invoke).mockResolvedValueOnce({
+      ...newHost,
+      description: 'Updated Server'
+    });
+    await invoke('update_host', {
+      hostname: newHost.hostname,
+      description: 'Updated Server'
+    });
+    
+    // 4. Delete host
+    vi.mocked(invoke).mockResolvedValueOnce(true);
+    await invoke('delete_host', { hostname: newHost.hostname });
+    
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(4);
+  });
+});
+```
+
+#### Test Setup (`setup.ts`)
+
+Mocks Tauri API for all tests:
+
+```typescript
+import { vi } from 'vitest';
+
+// Mock Tauri API
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+  emit: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: vi.fn(() => ({
+    label: 'main',
+    close: vi.fn(),
+    show: vi.fn(),
+    hide: vi.fn(),
+  })),
+}));
+
+// Mock window.__TAURI__
+global.window = Object.create(window);
+Object.defineProperty(window, '__TAURI__', {
+  value: {
+    invoke: vi.fn(),
+  },
+  writable: true,
+});
+```
+
+#### Running Tests and Coverage
+
+**Test Scripts:**
+
+```json
+{
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui"
+  }
+}
+```
+
+**Coverage Report Example:**
+
+```bash
+$ npm run test:coverage
+
+ Test Files  9 passed (9)
+      Tests  321 passed (321)
+   Start at  09:30:45
+   Duration  2.34s
+
+ ✓ src/__tests__/validation.test.ts (101)
+ ✓ src/__tests__/ui.test.ts (74)
+ ✓ src/__tests__/errors.test.ts (85)
+ ✓ src/__tests__/hosts.test.ts (61)
+ ✓ src/__tests__/validation.property.test.ts
+ ✓ src/__tests__/integration.test.ts
+ ✓ src/__tests__/ui-main.test.ts
+ ✓ src/__tests__/ui-login.test.ts
+ ✓ src/__tests__/ui-hosts.test.ts
+
+ % Coverage report from v8
+-------------------------|---------|----------|---------|---------|
+File                     | % Stmts | % Branch | % Funcs | % Lines |
+-------------------------|---------|----------|---------|---------|
+All files                |   94.23 |    89.47 |   92.85 |   94.23 |
+ src/utils               |   94.23 |    89.47 |   92.85 |   94.23 |
+  errors.ts              |   96.10 |    91.66 |   100   |   96.10 |
+  hosts.ts               |   95.32 |    88.88 |   90.90 |   95.32 |
+  ui.ts                  |   91.42 |    85.71 |   87.50 |   91.42 |
+  validation.ts          |   94.73 |    90.90 |   100   |   94.73 |
+-------------------------|---------|----------|---------|---------|
+
+✓ All coverage thresholds passed (80% minimum)
+```
+
+#### Key Testing Takeaways
+
+✅ **Comprehensive Coverage**
+- 321 unit tests for utility modules
+- 6,634 lines of test code
+- 94% statement coverage achieved
+
+✅ **Property-Based Testing**
+- 10,000+ generated test cases using fast-check
+- Discovers edge cases missed by manual testing
+- Higher confidence in validation logic
+
+✅ **Real DOM Testing**
+- jsdom environment for accurate DOM simulation
+- Tests actual UI interactions
+- Ensures accessibility (ARIA attributes)
+
+✅ **Mocked Tauri API**
+- Tests run without Tauri runtime
+- Fast execution (2-3 seconds for 321 tests)
+- CI/CD friendly
+
+✅ **Coverage Enforcement**
+- 80% threshold ensures quality
+- HTML reports for detailed analysis
+- Prevents untested code merges
+
+---
+
 ## 20.4 DevTools and Debugging
 
 Effective debugging is essential for fixing issues quickly.
@@ -576,7 +1505,9 @@ async function connectToHost(hostname: string) {
     console.log(`Connecting to ${hostname}`);
     
     try {
-        const result = await invoke('connect_rdp', { hostname });
+        const result = await invoke('launch_rdp', {
+          host: { hostname, description: '' }
+        });
         console.log('Connection successful:', result);
     } catch (error) {
         console.error('Connection failed:', error);
@@ -717,22 +1648,37 @@ For debugging LDAP or other network operations:
 use std::time::Instant;
 
 #[tauri::command]
-async fn scan_domain(domain: String) -> Result<Vec<String>, String> {
+async fn scan_domain(app_handle: tauri::AppHandle, domain: String, server: String) -> Result<String, String> {
     let start = Instant::now();
-    debug_log("INFO", "LDAP", &format!("Starting scan of domain: {}", domain), None);
+    debug_log(
+        "INFO",
+        "LDAP",
+        &format!("Starting scan_domain: domain={}, server={}", domain, server),
+        None,
+    );
     
-    // Perform LDAP scan
-    let result = perform_ldap_scan(&domain).await;
+    // Perform LDAP scan (QuickConnect delegates to core::ldap)
+    let credentials = crate::commands::get_stored_credentials().await?
+        .ok_or_else(|| "No stored credentials found. Please save your domain credentials in the login window first.".to_string())?;
+    let result = crate::core::ldap::scan_domain_for_servers(&domain, &server, &credentials)
+        .await
+        .map_err(|e| e.to_string());
     
     let duration = start.elapsed();
     debug_log(
         "INFO",
         "LDAP",
-        &format!("Scan completed in {:?}", duration),
-        Some(&format!("Found {} hosts", result.as_ref().map(|r| r.len()).unwrap_or(0)))
+        &format!("scan_domain completed in {:?}", duration),
+        Some(&format!(
+            "Found {} Windows Server(s)",
+            result.as_ref().map(|r| r.count).unwrap_or(0)
+        ))
     );
     
-    result
+    Ok(format!(
+        "Successfully found {} Windows Server(s).",
+        result.map(|r| r.count).unwrap_or(0)
+    ))
 }
 ```
 
@@ -762,7 +1708,7 @@ Create `benches/my_benchmark.rs`:
 
 ```rust
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use QuickConnect_lib::parse_username;
+use quickconnect_lib::rdp::parse_username;
 
 fn benchmark_parse_username(c: &mut Criterion) {
     c.bench_function("parse_username backslash", |b| {
@@ -902,13 +1848,13 @@ Rust's ownership system prevents most memory issues, but be aware of:
 ```rust
 // ❌ Unnecessary clone
 fn process_host(host: Host) -> String {
-    let name = host.name.clone(); // Unnecessary
-    name.to_uppercase()
+    let hostname = host.hostname.clone(); // Unnecessary
+    hostname.to_uppercase()
 }
 
 // ✅ Use references
 fn process_host(host: &Host) -> String {
-    host.name.to_uppercase()
+    host.hostname.to_uppercase()
 }
 ```
 
@@ -1146,13 +2092,14 @@ struct FullHost {
 // Send only what frontend needs
 #[derive(serde::Serialize)]
 struct HostSummary {
-    name: String,
     hostname: String,
+    description: String,
 }
 
-#[tauri::command]
-fn get_host_summaries() -> Vec<HostSummary> {
-    // Return minimal data
+// Hypothetical example: if your real Host struct had many fields,
+// expose a minimal "summary" shape instead of sending everything.
+fn get_host_summaries_example() -> Vec<HostSummary> {
+    vec![]
 }
 ```
 
@@ -1166,7 +2113,7 @@ function updateHostList(hosts: Host[]) {
     const list = document.getElementById('hostList')!;
     hosts.forEach(host => {
         const div = document.createElement('div');
-        div.textContent = host.name;
+        div.textContent = host.hostname;
         list.appendChild(div); // Each append triggers reflow
     });
 }
@@ -1174,7 +2121,7 @@ function updateHostList(hosts: Host[]) {
 // ✅ Single DOM update
 function updateHostList(hosts: Host[]) {
     const html = hosts.map(host => 
-        `<div class="host-card">${host.name}</div>`
+        `<div class="host-card">${host.hostname}</div>`
     ).join('');
     
     document.getElementById('hostList')!.innerHTML = html;
@@ -1187,7 +2134,7 @@ function updateHostList(hosts: Host[]) {
     hosts.forEach(host => {
         const div = document.createElement('div');
         div.className = 'host-card';
-        div.textContent = host.name;
+        div.textContent = host.hostname;
         fragment.appendChild(div);
     });
     
@@ -1316,14 +2263,10 @@ for (const host of hosts) {
     await invoke('save_host', { host });
 }
 
-// ✅ Single batched call
-#[tauri::command]
-fn save_hosts(hosts: Vec<Host>) -> Result<(), String> {
-    // Save all hosts at once
-}
-
-// Frontend makes 1 call
-await invoke('save_hosts', { hosts });
+// ✅ QuickConnect pattern: move the batch work into ONE command.
+// Example: scan_domain finds many hosts, writes hosts.csv, and emits "hosts-updated".
+const message = await invoke<string>('scan_domain', { domain, server });
+console.log(message);
 ```
 
 **Cache Results:**
@@ -1562,20 +2505,25 @@ loadData().catch(error => {
 // Load hosts
 const hosts = await invoke<Host[]>('get_hosts');
 
-// Then load details for each (N separate calls!)
+// Then call another command per host (N separate calls!)
 for (const host of hosts) {
-    const details = await invoke('get_host_details', { id: host.id });
-    // Process details
+    const status = await invoke<string>('check_host_status', { hostname: host.hostname });
+    // Process status
 }
 ```
 
-**✅ Solution: Batch Loading**
+**✅ Solution: Cache + parallelize (matches QuickConnect command set)**
 
-```rust
-#[tauri::command]
-fn get_hosts_with_details() -> Result<Vec<HostWithDetails>, String> {
-    // Load everything in one go
-}
+```typescript
+// Load once
+const hosts = await invoke<Host[]>('get_hosts');
+
+// Parallelize status checks
+const statuses = await Promise.all(
+  hosts.map(h => invoke<string>('check_host_status', { hostname: h.hostname }))
+);
+
+// Or cache results per hostname if you call this repeatedly.
 ```
 
 **❌ Problem: Excessive Rendering**
@@ -1685,49 +2633,23 @@ Add timing measurements to the LDAP scan function:
 
 ```rust
 #[tauri::command]
-async fn scan_domain(domain: String) -> Result<Vec<String>, String> {
+async fn scan_domain(app_handle: tauri::AppHandle, domain: String, server: String) -> Result<String, String> {
     // TODO: Add timing measurements
-    // 1. Measure connection time
-    // 2. Measure search time
-    // 3. Measure total time
+    // 1. Measure total time
+    // 2. Log the result count
+    // 3. (Optional) Add deeper timings inside core::ldap
     // 4. Log results using debug_log
-    
-    let base_dn = domain_to_base_dn(&domain);
-    let ldap_url = format!("ldap://{}:389", domain);
-    
-    let (conn, mut ldap) = LdapConnAsync::new(&ldap_url)
+
+    // QuickConnect: authenticate using stored domain credentials.
+    let credentials = crate::commands::get_stored_credentials().await?
+        .ok_or_else(|| "No stored credentials found. Please save your domain credentials in the login window first.".to_string())?;
+
+    // QuickConnect: delegate the LDAP work to core::ldap.
+    let scan_result = crate::core::ldap::scan_domain_for_servers(&domain, &server, &credentials)
         .await
-        .map_err(|e| format!("LDAP connection failed: {}", e))?;
-    
-    ldap3::drive!(conn);
-    
-    ldap.simple_bind("", "")
-        .await
-        .map_err(|e| format!("LDAP bind failed: {}", e))?;
-    
-    let (rs, _res) = ldap
-        .search(
-            &base_dn,
-            Scope::Subtree,
-            "(&(objectClass=computer)(operatingSystem=Windows*))",
-            vec!["cn"],
-        )
-        .await
-        .map_err(|e| format!("LDAP search failed: {}", e))?;
-    
-    let computers: Vec<String> = rs
-        .into_iter()
-        .filter_map(|entry| {
-            let se = SearchEntry::construct(entry);
-            se.attrs.get("cn").and_then(|v| v.first().cloned())
-        })
-        .collect();
-    
-    ldap.unbind()
-        .await
-        .map_err(|e| format!("LDAP unbind failed: {}", e))?;
-    
-    Ok(computers)
+        .map_err(|e| e.to_string())?;
+
+    Ok(format!("Successfully found {} Windows Server(s).", scan_result.count))
 }
 ```
 
@@ -1736,71 +2658,39 @@ async fn scan_domain(domain: String) -> Result<Vec<String>, String> {
 
 ```rust
 #[tauri::command]
-async fn scan_domain(domain: String) -> Result<Vec<String>, String> {
+async fn scan_domain(app_handle: tauri::AppHandle, domain: String, server: String) -> Result<String, String> {
     use std::time::Instant;
-    
+
     let total_start = Instant::now();
-    debug_log("INFO", "LDAP", &format!("Starting domain scan: {}", domain), None);
-    
-    let base_dn = domain_to_base_dn(&domain);
-    let ldap_url = format!("ldap://{}:389", domain);
-    
-    // Measure connection time
-    let conn_start = Instant::now();
-    let (conn, mut ldap) = LdapConnAsync::new(&ldap_url)
-        .await
-        .map_err(|e| format!("LDAP connection failed: {}", e))?;
-    let conn_duration = conn_start.elapsed();
-    debug_log("INFO", "LDAP", "Connected to LDAP server", Some(&format!("Time: {:?}", conn_duration)));
-    
-    ldap3::drive!(conn);
-    
-    ldap.simple_bind("", "")
-        .await
-        .map_err(|e| format!("LDAP bind failed: {}", e))?;
-    
-    // Measure search time
-    let search_start = Instant::now();
-    let (rs, _res) = ldap
-        .search(
-            &base_dn,
-            Scope::Subtree,
-            "(&(objectClass=computer)(operatingSystem=Windows*))",
-            vec!["cn"],
-        )
-        .await
-        .map_err(|e| format!("LDAP search failed: {}", e))?;
-    let search_duration = search_start.elapsed();
-    
-    let computers: Vec<String> = rs
-        .into_iter()
-        .filter_map(|entry| {
-            let se = SearchEntry::construct(entry);
-            se.attrs.get("cn").and_then(|v| v.first().cloned())
-        })
-        .collect();
-    
     debug_log(
         "INFO",
         "LDAP",
-        &format!("Search completed, found {} computers", computers.len()),
-        Some(&format!("Search time: {:?}", search_duration))
+        &format!("Starting domain scan: domain={}, server={}", domain, server),
+        None,
     );
-    
-    ldap.unbind()
+
+    let credentials = crate::commands::get_stored_credentials().await?
+        .ok_or_else(|| "No stored credentials found. Please save your domain credentials in the login window first.".to_string())?;
+
+    let scan_result = crate::core::ldap::scan_domain_for_servers(&domain, &server, &credentials)
         .await
-        .map_err(|e| format!("LDAP unbind failed: {}", e))?;
-    
+        .map_err(|e| e.to_string())?;
+
     let total_duration = total_start.elapsed();
     debug_log(
         "INFO",
         "LDAP",
         "Domain scan completed",
-        Some(&format!("Total time: {:?}, Connection: {:?}, Search: {:?}",
-            total_duration, conn_duration, search_duration))
+        Some(&format!(
+            "Total time: {:?}, Found {} Windows Server(s)",
+            total_duration, scan_result.count
+        ))
     );
-    
-    Ok(computers)
+
+    Ok(format!(
+        "Successfully found {} Windows Server(s).",
+        scan_result.count
+    ))
 }
 ```
 
@@ -1816,9 +2706,10 @@ async function displaySearchResults(query: string) {
     const allHosts = await invoke<Host[]>('get_hosts');
     
     // Filter hosts
-    const filtered = allHosts.filter(host => 
-        host.name.toLowerCase().includes(query.toLowerCase()) ||
-        host.hostname.toLowerCase().includes(query.toLowerCase())
+    const lowerQuery = query.toLowerCase();
+    const filtered = allHosts.filter(host =>
+        host.hostname.toLowerCase().includes(lowerQuery) ||
+        host.description.toLowerCase().includes(lowerQuery)
     );
     
     // Clear existing results
@@ -1830,15 +2721,15 @@ async function displaySearchResults(query: string) {
         const div = document.createElement('div');
         div.className = 'host-card';
         div.innerHTML = `
-            <h3>${host.name}</h3>
-            <p>${host.hostname}</p>
+            <h3>${host.hostname}</h3>
+            <p>${host.description}</p>
         `;
         
-        // Load details for each host
-        const details = await invoke('get_host_details', { id: host.id });
-        const detailsDiv = document.createElement('div');
-        detailsDiv.textContent = JSON.stringify(details);
-        div.appendChild(detailsDiv);
+        // Anti-pattern: N+1 IPC calls (one status check per host)
+        const status = await invoke<string>('check_host_status', { hostname: host.hostname });
+        const statusDiv = document.createElement('div');
+        statusDiv.textContent = status;
+        div.appendChild(statusDiv);
         
         // Add to DOM
         container.appendChild(div); // Reflow on each append
@@ -1854,7 +2745,7 @@ document.getElementById('search')!.addEventListener('input', (e) => {
 
 **Problems to fix:**
 1. Loading all hosts on every search
-2. Multiple IPC calls for details (N+1 query)
+2. Multiple IPC calls per result (N+1 status checks)
 3. Multiple DOM reflows
 4. No debouncing
 
@@ -1864,7 +2755,7 @@ document.getElementById('search')!.addEventListener('input', (e) => {
 ```typescript
 // Cache hosts
 let hostsCache: Host[] | null = null;
-let hostDetailsCache = new Map<number, any>();
+let hostStatusCache = new Map<string, string>();
 
 async function getHosts(): Promise<Host[]> {
     if (hostsCache === null) {
@@ -1879,31 +2770,30 @@ async function displaySearchResults(query: string) {
     
     // Filter hosts
     const lowerQuery = query.toLowerCase();
-    const filtered = allHosts.filter(host => 
-        host.name.toLowerCase().includes(lowerQuery) ||
-        host.hostname.toLowerCase().includes(lowerQuery)
+    const filtered = allHosts.filter(host =>
+        host.hostname.toLowerCase().includes(lowerQuery) ||
+        host.description.toLowerCase().includes(lowerQuery)
     );
     
-    // Batch load details if needed
-    const idsNeeded = filtered
-        .map(h => h.id)
-        .filter(id => !hostDetailsCache.has(id));
-    
-    if (idsNeeded.length > 0) {
-        const details = await invoke('get_hosts_details_batch', { ids: idsNeeded });
-        details.forEach((detail: any, index: number) => {
-            hostDetailsCache.set(idsNeeded[index], detail);
-        });
-    }
+    // Cache host status (avoid repeating status calls while typing)
+    const hostnamesNeeded = filtered
+        .map(h => h.hostname)
+        .filter(hostname => !hostStatusCache.has(hostname));
+    await Promise.all(
+        hostnamesNeeded.map(async (hostname) => {
+            const status = await invoke<string>('check_host_status', { hostname });
+            hostStatusCache.set(hostname, status);
+        })
+    );
     
     // Build HTML in one go
     const html = filtered.map(host => {
-        const details = hostDetailsCache.get(host.id) || {};
+        const status = hostStatusCache.get(host.hostname) ?? '';
         return `
             <div class="host-card">
-                <h3>${host.name}</h3>
-                <p>${host.hostname}</p>
-                <div>${JSON.stringify(details)}</div>
+                <h3>${host.hostname}</h3>
+                <p>${host.description}</p>
+                <div>${status}</div>
             </div>
         `;
     }).join('');

@@ -293,13 +293,13 @@ DaisyUI provides semantic button styles:
 
 ```html
 <div class="flex justify-between space-x-2">
-  <button type="button" id="delete-btn" class="btn btn-error flex-1" disabled>
+  <button type="button" id="delete-btn" tabindex="5" class="btn btn-error flex-1" disabled>
     Delete
   </button>
-  <button type="button" id="cancel-btn" class="btn btn-circle flex-1">
+  <button type="button" id="cancel-btn" tabindex="4" class="btn btn-circle flex-1">
     Cancel
   </button>
-  <button type="submit" class="btn btn-primary flex-1" disabled>
+  <button type="submit" tabindex="3" class="btn btn-primary flex-1" disabled>
     OK
   </button>
 </div>
@@ -336,11 +336,8 @@ DaisyUI styles form elements consistently:
   Username
 </label>
 <input
-  type="text"
-  id="username"
-  class="input input-bordered w-full mt-1"
-  placeholder="Enter username"
-/>
+  type="text" id="username" name="username" tabindex="1" maxlength="104"
+  class="input input-bordered w-full mt-1" placeholder="Enter username" />
 ```
 
 Key classes:
@@ -374,30 +371,38 @@ DaisyUI integrates with native `<dialog>` elements:
 
 ```html
 <dialog id="hostModal" class="modal">
-  <div class="modal-box max-w-2xl w-11/12 bg-base-100 shadow-xl p-8 rounded-2xl">
-    <h3 class="text-2xl font-bold mb-8 text-center">Edit Host</h3>
-    <form id="hostForm" class="space-y-6">
-      <div class="space-y-4">
-        <label class="label">
-          <span class="label-text text-base">RDP Hostname</span>
-        </label>
-        <input 
-          type="text" 
-          id="hostname" 
-          class="input input-bordered w-full rounded-xl py-6" 
-          required 
-        />
-      </div>
-      <div class="modal-action pt-4 flex justify-between">
-        <button type="button" class="btn btn-circle w-24" onclick="hostModal.close()">
-          Cancel
-        </button>
-        <button type="submit" class="btn btn-primary w-24">
-          Save
-        </button>
-      </div>
-    </form>
-  </div>
+    <div class="modal-backdrop bg-base-200 bg-opacity-50"></div>
+    <div class="modal-box max-w-2xl w-11/12 bg-base-100 shadow-xl p-8 rounded-2xl border border-base-300">
+        <h3 id="modalTitle" class="text-2xl font-bold mb-8 text-center">
+            Edit Host
+        </h3>
+        <form id="hostForm" class="space-y-6" autocomplete="off">
+            <div class="space-y-4">
+                <label class="label">
+                    <span class="label-text text-base">RDP Hostname</span>
+                </label>
+                <input type="text" id="hostname" name="hostname" tabindex="1"
+                    class="input input-bordered w-full rounded-xl py-6" required autocomplete="off"
+                    maxlength="253" placeholder="server.domain.com" />
+            </div>
+            <div class="space-y-4 mb-6">
+                <label class="label">
+                    <span class="label-text text-base">Description</span>
+                </label>
+                <textarea id="description" name="description" tabindex="2"
+                    class="textarea textarea-bordered w-full h-32 rounded-xl" autocomplete="off"
+                    maxlength="500"></textarea>
+            </div>
+            <div class="modal-action pt-4 flex justify-between">
+                <button type="button" tabindex="4" class="btn btn-circle w-24" id="hostModalCancel">
+                    Cancel
+                </button>
+                <button type="submit" class="btn btn-primary rounded-xl w-24" tabindex="3">
+                    Save
+                </button>
+            </div>
+        </form>
+    </div>
 </dialog>
 ```
 

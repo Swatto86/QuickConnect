@@ -59,7 +59,7 @@ $env:PATH += ";C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Tools
 
 **Error Message:**
 ```
-error: failed to run custom build command for `tauri-build v2.0.0`
+error: failed to run custom build command for `tauri-build v2.x.x`
 
 Caused by:
   process didn't exit successfully
@@ -76,7 +76,7 @@ npm install
 
 2. **Check Node/npm Versions:**
 ```powershell
-node --version  # Should be 18.0.0 or higher
+node --version  # Node 20+ recommended (18+ may work depending on tooling)
 npm --version   # Should be 8.0.0 or higher
 ```
 
@@ -286,7 +286,7 @@ Console: `Command 'my_command' not found`
 
 1. **Verify command is registered:**
 ```rust
-// src-tauri/src/lib.rs or main.rs
+// src-tauri/src/lib.rs (QuickConnect) or src-tauri/src/main.rs (some templates)
 tauri::Builder::default()
     .invoke_handler(tauri::generate_handler![
         my_command,  // Make sure this matches function name exactly
@@ -377,15 +377,31 @@ async fn fetch_data(url: String) -> Result<String, String> {
 }
 ```
 
-**Option 2: Configure CSP (if needed)**
+**Option 2: Configure CSP (if you later enable it)**
+
+QuickConnect currently **disables CSP** (this matches the current implementation):
+
 ```json
-// tauri.conf.json
+// src-tauri/tauri.conf.json
 {
-  "app": {
-    "security": {
-      "csp": "default-src 'self'; connect-src 'self' https://api.example.com"
+    "app": {
+        "security": {
+            "csp": null
+        }
     }
-  }
+}
+```
+
+If you add HTTP requests to your app in the future and decide to enable CSP, you'd configure it here (example):
+
+```json
+// src-tauri/tauri.conf.json (example if enabling CSP)
+{
+    "app": {
+        "security": {
+            "csp": "default-src 'self'; connect-src 'self' https://api.example.com"
+        }
+    }
 }
 ```
 
@@ -866,7 +882,7 @@ fn main() {
     warn!("Low disk space");
     error!("Failed to connect");
     
-    QuickConnect_lib::run();
+    quickconnect_lib::run();
 }
 ```
 

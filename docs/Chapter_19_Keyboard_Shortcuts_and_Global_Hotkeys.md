@@ -69,13 +69,33 @@ app.global_shortcut().register("Ctrl+Shift+R")?;
 
 Global shortcuts require a Tauri plugin. Let's set it up.
 
+### Required Tauri 2 Permissions (QuickConnect)
+
+In Tauri 2, plugins are gated by **capabilities**. QuickConnect grants global shortcut permissions via:
+
+```json
+// src-tauri/capabilities/desktop.json
+{
+    "identifier": "desktop-capability",
+    "platforms": ["macOS", "windows", "linux"],
+    "windows": ["main"],
+    "permissions": [
+        "global-shortcut:allow-register",
+        "global-shortcut:allow-unregister",
+        "global-shortcut:allow-is-registered"
+    ]
+}
+```
+
+Without these permissions, `tauri-plugin-global-shortcut` may fail at runtime even if it compiles.
+
 ### Adding the Dependency
 
 Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-tauri = { version = "2.0.0", features = [ "tray-icon" ] }
+tauri = { version = "2", features = [ "tray-icon" ] }
 # ... other dependencies
 
 # Add global shortcut support for desktop platforms only

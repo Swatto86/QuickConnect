@@ -599,7 +599,7 @@ Every time a connection is launched, it's added to recent connections:
 
 ```rust
 #[tauri::command]
-async fn launch_rdp(host: Host) -> Result<(), String> {
+async fn launch_rdp(app_handle: tauri::AppHandle, host: Host) -> Result<(), String> {
     // ... RDP launch logic ...
 
     // Save to recent connections
@@ -841,14 +841,9 @@ use std::fs::OpenOptions;
 fn save_recent_connections(recent: &RecentConnections) -> Result<(), String> {
     let file_path = get_recent_connections_file()?;
     let json = serde_json::to_string_pretty(recent)
-        .map_err(|e| format!("Failed to serialize: {}", e))?;
-    
-    // Write atomically by writing to a temp file and renaming
-    let temp_path = file_path.with_extension("tmp");
-    std::fs::write(&temp_path, json)
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
-    std::fs::rename(&temp_path, &file_path)
-        .map_err(|e| format!("Failed to rename file: {}", e))?;
+        .map_err(|e| format!("Failed to serialize recent connections: {}", e))?;
+    std::fs::write(&file_path, json)
+        .map_err(|e| format!("Failed to write recent connections: {}", e))?;
     
     Ok(())
 }

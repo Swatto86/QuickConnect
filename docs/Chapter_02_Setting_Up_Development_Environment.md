@@ -113,7 +113,7 @@ rustc --version
 
 You should see output like:
 ```
-rustc 1.75.0 (82e1608df 2024-12-21)
+rustc 1.xx.x (.... ....-..-..)
 ```
 
 Check Cargo:
@@ -123,7 +123,7 @@ cargo --version
 
 Expected output:
 ```
-cargo 1.75.0 (1d8b05cdd 2024-11-28)
+cargo 1.xx.x (.... ....-..-..)
 ```
 
 ### Understanding What Was Installed
@@ -153,7 +153,7 @@ Node.js provides the runtime for frontend build tools.
 
 1. Visit: **https://nodejs.org/**
 2. Download the **LTS (Long Term Support)** version
-   - As of writing: Node.js 20.x LTS
+    - Use the current LTS release (Node.js 20+ is fine)
    - Choose the Windows Installer (.msi) 64-bit
 3. Save to your Downloads folder
 
@@ -181,7 +181,7 @@ node --version
 
 Expected output:
 ```
-v20.10.0
+v20.x.x
 ```
 
 Check npm:
@@ -191,7 +191,7 @@ npm --version
 
 Expected output:
 ```
-10.2.3
+10.x.x
 ```
 
 ### Optional: Configure npm
@@ -288,43 +288,46 @@ $env:Path += ";C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC
 
 Now that we have Rust, Node.js, and build tools, we can install Tauri.
 
-### Method 1: Install via Cargo (Recommended)
+### Recommended for this repo: use the local npm CLI
+
+QuickConnect uses the Tauri v2 CLI via the npm devDependency `@tauri-apps/cli` (see `package.json`). That means you typically **don’t** install a separate Cargo-based CLI.
+
+From the QuickConnect project root:
 
 ```powershell
-cargo install tauri-cli
+npm install
 ```
 
-This will:
-- Download and compile Tauri CLI from source
-- Take 5-10 minutes (one-time compilation)
-- Install to: `C:\Users\YourName\.cargo\bin\cargo-tauri.exe`
+### Verify Tauri CLI is available
 
-### Method 2: Install via npm (Alternative)
+Run the CLI from the local dependency (no global install required):
+
+```powershell
+npx --no-install tauri --version
+```
+
+You should see output like:
+```
+tauri 2.x.y
+```
+
+> If `npx --no-install tauri --version` fails, make sure you're in a project folder that has `@tauri-apps/cli` installed (for QuickConnect: run `npm install` in the repo root).
+
+### Optional: global install
+
+If you prefer a global `tauri` command across projects:
 
 ```powershell
 npm install -g @tauri-apps/cli
 ```
 
-> **Note**: We'll use the Cargo version in this guide as it's more integrated with Rust tooling.
-
-### Verify Tauri Installation
-
-```powershell
-cargo tauri --version
-```
-
-Expected output:
-```
-tauri-cli 2.0.0
-```
-
 ### What Tauri CLI Does
 
-The `cargo tauri` command provides:
-- `cargo tauri init` - Create new Tauri project
-- `cargo tauri dev` - Run in development mode with hot-reload
-- `cargo tauri build` - Build production executable
-- `cargo tauri info` - Show system information
+The `tauri` command provides:
+- `tauri init` - Create new Tauri project
+- `tauri dev` - Run in development mode with hot-reload
+- `tauri build` - Build production executable
+- `tauri info` - Show system information
 
 ---
 
@@ -506,7 +509,7 @@ test-tauri-app/
 ├── src-tauri/           # Rust backend
 │   ├── src/
 │   │   ├── main.rs      # Rust entry point
-│   │   └── lib.rs       # Tauri commands
+│   │   └── lib.rs       # App setup + command registration
 │   ├── Cargo.toml       # Rust dependencies
 │   ├── tauri.conf.json  # Tauri configuration
 │   └── icons/           # App icons
@@ -515,7 +518,11 @@ test-tauri-app/
 └── vite.config.ts       # Vite configuration
 ```
 
-This is the same structure QuickConnect uses!
+This is a similar structure to what QuickConnect uses.
+
+> In QuickConnect, `src-tauri/src/lib.rs` wires the app together (plugins, setup, and `invoke_handler(...)` registration), while the individual command implementations live under `src-tauri/src/commands/`.
+
+> QuickConnect uses the same fundamentals (Vite frontend + `src-tauri/` backend), but includes additional HTML entrypoints/windows and project-specific configuration.
 
 ---
 
@@ -537,7 +544,9 @@ node --version
 npm --version
 
 Write-Host "`nTauri:" -ForegroundColor Yellow
-cargo tauri --version
+# NOTE: This check assumes you're running the script inside a folder
+# where a Tauri project has installed its npm dependencies.
+npx --no-install tauri --version
 
 Write-Host "`nVisual Studio Build Tools:" -ForegroundColor Yellow
 if (Test-Path "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools") {
@@ -566,21 +575,21 @@ Expected output:
 === Tauri Development Environment Check ===
 
 Rust:
-rustc 1.75.0 (82e1608df 2024-12-21)
-cargo 1.75.0 (1d8b05cdd 2024-11-28)
+rustc 1.xx.x (.... ....-..-..)
+cargo 1.xx.x (.... ....-..-..)
 
 Node.js:
-v20.10.0
-10.2.3
+v20.x.x
+10.x.x
 
 Tauri:
-tauri-cli 2.0.0
+tauri 2.x.y
 
 Visual Studio Build Tools:
 ✓ Build Tools installed
 
 WebView2:
-✓ WebView2 version: 120.0.2210.144
+✓ WebView2 version: 120.x.x.x
 
 === Check Complete ===
 ```
@@ -752,13 +761,13 @@ Let's examine what QuickConnect specifically requires:
 ```json
 {
   "dependencies": {
-    "@tauri-apps/api": "^2.1.1",
-    "@tauri-apps/plugin-global-shortcut": "^2.3.1",
-    "@tauri-apps/plugin-shell": "^2.0.0"
+        "@tauri-apps/api": "2",
+        "@tauri-apps/plugin-global-shortcut": "2",
+        "@tauri-apps/plugin-shell": "2"
   },
   "devDependencies": {
     "@tailwindcss/forms": "^0.5.9",
-    "@tauri-apps/cli": "^2.0.0",
+        "@tauri-apps/cli": "2",
     "autoprefixer": "^10.4.20",
     "daisyui": "^4.12.14",
     "postcss": "^8.4.49",
@@ -772,8 +781,11 @@ Let's examine what QuickConnect specifically requires:
 ### QuickConnect's Cargo.toml
 
 ```toml
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
 [dependencies]
-tauri = { version = "2.0.0", features = [ "tray-icon" ] }
+tauri = { version = "2", features = [ "tray-icon" ] }
 tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
@@ -791,6 +803,12 @@ csv = "1.3"
 ldap3 = "0.11"
 tokio = { version = "1", features = ["rt", "macros"] }
 chrono = "0.4"
+thiserror = "1.0"
+anyhow = "1.0"
+once_cell = "1.19"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "2"
@@ -864,8 +882,8 @@ npm update
 # Update Rust crates
 cargo update
 
-# Update Tauri CLI
-cargo install tauri-cli --force
+# Update Tauri CLI (local devDependency)
+npm update @tauri-apps/cli
 ```
 
 ---
@@ -888,7 +906,7 @@ cargo install tauri-cli --force
 
 ✅ **Tauri CLI operational**
 - Create, build, and run Tauri apps
-- Integrated with Cargo and npm
+- Provided via npm (`@tauri-apps/cli`), with Cargo used under the hood
 
 ✅ **VS Code optimized for Tauri**
 - rust-analyzer for intelligent Rust editing
@@ -1022,7 +1040,8 @@ Write-Host ""
 # Check Tauri
 Write-Host "Checking Tauri..." -ForegroundColor Yellow
 try {
-    $tauriVersion = (cargo tauri --version) 2>&1
+    # Requires running from a project folder with @tauri-apps/cli installed
+    $tauriVersion = (npx --no-install tauri --version) 2>&1
     Write-Host "✓ Tauri CLI: $tauriVersion" -ForegroundColor Green
     $report += "Tauri: OK - $tauriVersion"
 } catch {

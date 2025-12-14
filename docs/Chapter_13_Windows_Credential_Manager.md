@@ -90,6 +90,18 @@ pub struct CREDENTIALW {
 
 Let's examine how QuickConnect saves credentials to Windows Credential Manager.
 
+> **📝 Note on Production Architecture:** The following examples show direct Windows API calls for educational purposes to demonstrate how the Credential Manager works. In the actual QuickConnect implementation (December 2024 refactoring), all unsafe Windows API code is **isolated in the adapter layer**:
+> 
+> - [adapters/windows/credential_manager.rs](../src-tauri/src/adapters/windows/credential_manager.rs) - `CredentialManager` trait with all unsafe code (268 lines)
+> - [commands/credentials.rs](../src-tauri/src/commands/credentials.rs) - Safe command wrappers using the trait
+> 
+> This trait-based design provides:
+> - **Testability**: Mock implementations for unit tests
+> - **Safety**: All unsafe code isolated in one module
+> - **Maintainability**: Single source of truth for Windows API interactions
+> 
+> See [Appendix A, Section A.4](Appendix_A_Complete_QuickRDP_Walkthrough.md#a4-adapters-layer-windows-api-abstractions) for the production implementation. The examples below are simplified for learning purposes.
+
 ### The save_credentials Command
 
 ```rust
@@ -523,6 +535,204 @@ let credentials = match get_host_credentials(hostname.clone()).await? {
 2. **Convenience**: Default credentials for most hosts
 3. **Security**: Isolate credentials per destination
 
+### Deleting Per-Host Credentials
+
+QuickConnect provides a command to delete credentials for a specific host:
+
+```rust
+/// Deletes per-host credentials
+///
+/// # Arguments
+/// * `hostname` - Server hostname
+///
+/// # Returns
+/// * `Ok(())` - Credentials deleted successfully
+/// * `Err(String)` - Error message for frontend
+#[tauri::command]
+pub async fn delete_host_credentials(hostname: String) -> Result<(), String> {
+    let target = format!("TERMSRV/{}", hostname);
+
+    CREDENTIAL_MANAGER
+        .delete(&target)
+        .map_err(|e| {
+            debug_log(
+                "ERROR",
+                "HOST_CREDENTIALS",
+                &format!("Failed to delete host credentials: {}", e),
+                None,
+            );
+            e.to_string()
+        })?;
+
+    debug_log(
+        "INFO",
+        "HOST_CREDENTIALS",
+        &format!("Deleted per-host credentials for {}", hostname),
+        None,
+    );
+    Ok(())
+}
+```
+
+**Usage from frontend:**
+```typescript
+async function deleteHostCredentials(hostname: string) {
+  try {
+    await invoke('delete_host_credentials', { hostname });
+    console.log(`Credentials deleted for ${hostname}`);
+  } catch (error) {
+    console.error(`Failed to delete credentials: ${error}`);
+  }
+}
+```
+
+**When to use:**
+- User wants to remove saved credentials for a specific server
+- Server is being decommissioned
+- Credentials have been compromised
+- User wants to force re-entry of credentials on next connection
+
+### Listing Hosts with Saved Credentials
+
+To display which hosts have stored credentials (useful for UI indicators):
+
+```rust
+/// Lists all hosts with saved per-host credentials
+///
+/// # Returns
+/// * Vector of hostnames that have saved credentials
+#[tauri::command]
+pub async fn list_hosts_with_credentials() -> Result<Vec<String>, String> {
+    // Query Windows Credential Manager for all credentials starting with "TERMSRV/"
+    // This prefix filter returns only per-host RDP credentials, excluding global ones
+    match CREDENTIAL_MANAGER.list_with_prefix("TERMSRV/") {
+        Ok(targets) => {
+            // Strip "TERMSRV/" prefix from each target to get just the hostname
+            // e.g., "TERMSRV/server1.example.com" -> "server1.example.com"
+            let hostnames: Vec<String> = targets
+                .iter()
+                .filter_map(|t| t.strip_prefix("TERMSRV/").map(|s| s.to_string()))
+                .collect();
+            Ok(hostnames)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+```
+
+**Frontend implementation:**
+```typescript
+interface Host {
+  hostname: string;
+  description: string;
+  hasCredentials?: boolean;
+}
+
+async function loadHostsWithCredentialStatus() {
+  try {
+    // Load all hosts
+    const hosts = await invoke<Host[]>('get_hosts');
+    
+    // Get list of hosts with credentials
+    const hostsWithCreds = await invoke<string[]>('list_hosts_with_credentials');
+    
+    // Mark which hosts have credentials
+    const hostsWithStatus = hosts.map(host => ({
+      ...host,
+      hasCredentials: hostsWithCreds.includes(host.hostname)
+    }));
+    
+    return hostsWithStatus;
+  } catch (error) {
+    console.error('Failed to load hosts:', error);
+    return [];
+  }
+}
+```
+
+**UI Display Example:**
+```typescript
+function renderHostCard(host: Host) {
+  const credentialIcon = host.hasCredentials 
+    ? '🔑 Credentials saved' 
+    : '🔓 No credentials';
+  
+  return `
+    <div class="card">
+      <h3>${host.hostname}</h3>
+      <p>${host.description}</p>
+      <div class="credential-status">
+        <span class="${host.hasCredentials ? 'text-success' : 'text-warning'}">
+          ${credentialIcon}
+        </span>
+      </div>
+      ${host.hasCredentials ? `
+        <button onclick="deleteHostCredentials('${host.hostname}')">
+          Remove Credentials
+        </button>
+      ` : ''}
+    </div>
+  `;
+}
+```
+
+**Use Cases:**
+1. **Visual Indicators**: Show users which hosts have saved credentials
+2. **Credential Audit**: List all hosts with stored credentials for security review
+3. **Cleanup Operations**: Identify credentials that can be removed
+4. **Connection Readiness**: Indicate which hosts are ready for one-click connection
+
+**Implementation in WindowsCredentialManager:**
+```rust
+impl CredentialManager for WindowsCredentialManager {
+    // ... other methods ...
+    
+    fn list_with_prefix(&self, prefix: &str) -> Result<Vec<String>, AppError> {
+        use windows::Win32::Security::Credentials::CredEnumerateW;
+        
+        let prefix_wide: Vec<u16> = OsStr::new(prefix)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        
+        unsafe {
+            let mut count: u32 = 0;
+            let mut credentials: *mut *mut CREDENTIALW = std::ptr::null_mut();
+            
+            // Enumerate all credentials
+            match CredEnumerateW(
+                PCWSTR::null(),
+                0,
+                &mut count,
+                &mut credentials
+            ) {
+                Ok(_) => {
+                    let mut targets = Vec::new();
+                    
+                    // Iterate through credentials and filter by prefix
+                    for i in 0..count {
+                        let cred = &*(*credentials.offset(i as isize));
+                        if let Ok(target_name) = PWSTR::from_raw(cred.TargetName.0).to_string() {
+                            if target_name.starts_with(prefix) {
+                                targets.push(target_name);
+                            }
+                        }
+                    }
+                    
+                    // Free enumerated credentials
+                    CredFree(credentials as *const _);
+                    
+                    Ok(targets)
+                }
+                Err(e) => Err(AppError::CredentialError(format!(
+                    "Failed to enumerate credentials: {:?}", e
+                )))
+            }
+        }
+    }
+}
+```
+
 ---
 
 ## 13.7 Security Best Practices
@@ -674,16 +884,20 @@ let creds = match get_host_credentials(hostname).await? {
 
 **Step 5: TERMSRV Storage**
 ```rust
-// Save to TERMSRV/{hostname} for RDP SSO
+// Save to TERMSRV/{hostname} for RDP SSO (via the safe adapter)
 let target = format!("TERMSRV/{}", hostname);
-CredWriteW(&cred_for_rdp, 0)?;
+
+let credential_manager = WindowsCredentialManager::new();
+credential_manager.save(&target, &termsrv_username, &creds.password)?;
 ```
 
 **Step 6: RDP Launch**
 ```rust
 // Create .rdp file with username/domain
 // Windows RDP automatically uses TERMSRV/* credentials
-ShellExecuteW(&rdp_file)?;
+std::process::Command::new("mstsc.exe")
+    .arg(rdp_file_path.to_string_lossy().as_ref())
+    .spawn()?;
 ```
 
 ---

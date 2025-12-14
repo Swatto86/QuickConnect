@@ -41,53 +41,75 @@ QuickConnect organizes errors into categories:
 
 ---
 
-## 14.2 The Result<T, E> Pattern
+## 14.2 The AppError Type and thiserror
 
-Rust's `Result` type is the foundation of error handling. Let's see how QuickConnect uses it.
+QuickConnect uses a **centralized error type** called `AppError` defined in [src-tauri/src/errors.rs](../src-tauri/src/errors.rs). This provides structured error handling with context.
 
-### Basic Result Usage
+### The AppError Enum with thiserror
+
+Instead of using plain strings, QuickConnect defines specific error variants:
 
 ```rust
-#[tauri::command]
-async fn save_credentials(credentials: Credentials) -> Result<(), String> {
-    // Validation
-    if credentials.username.is_empty() {
-        return Err("Username cannot be empty".to_string());
-    }
-    
-    // Operation that might fail
-    unsafe {
-        match CredWriteW(&cred, 0) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("Failed to save credentials: {:?}", e)),
-        }
-    }
+//! src-tauri/src/errors.rs
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum AppError {
+    /// Credentials not found in Windows Credential Manager
+    #[error("Credentials not found for target: {target}")]
+    CredentialsNotFound { target: String },
+
+    /// Failed to access Windows Credential Manager
+    #[error("Windows Credential Manager error: {operation}")]
+    CredentialManagerError {
+        operation: String,
+        #[source]
+        source: Option<anyhow::Error>,
+    },
+
+    /// Invalid hostname format
+    #[error("Invalid hostname '{hostname}': {reason}")]
+    InvalidHostname { hostname: String, reason: String },
+
+    /// CSV file operation failed
+    #[error("CSV operation failed: {operation}")]
+    CsvError {
+        operation: String,
+        #[source]
+        source: csv::Error,
+    },
+
+    // ... 17 total variants
 }
 ```
 
-**Key Points:**
-- Return `Result<T, E>` where `T` is success type, `E` is error type
-- Use `String` for error type (serializable to frontend)
-- Return early with `Err(...)` for validation failures
-- Convert API errors to descriptive strings
+**Benefits of thiserror:**
+- ✅ Automatic `Display` and `Error` trait implementations
+- ✅ `#[source]` attribute for error chaining
+- ✅ Contextual information in each variant
+- ✅ Type-safe error matching
+- ✅ User-friendly error messages via `#[error(...)]`
 
-### The ? Operator
+### The ? Operator with AppError
 
-The `?` operator simplifies error propagation:
+The `?` operator automatically propagates errors. With `AppError`, you get rich context:
 
 ```rust
-#[tauri::command]
-async fn launch_rdp(host: Host) -> Result<(), String> {
-    // ? automatically returns Err if function fails
-    let credentials = get_stored_credentials().await?
-        .ok_or("No credentials found")?;
+// src-tauri/src/core/rdp_launcher.rs
+use crate::AppError;
+
+pub async fn launch_rdp_connection(
+    hostname: &str,
+    credentials: &Credentials,
+) -> Result<(), AppError> {
+    // ? automatically returns AppError variants
+    let rdp_file_path = create_rdp_file(hostname, credentials)?;
     
-    // Multiple operations with ?
-    let appdata_dir = std::env::var("APPDATA")
-        .map_err(|_| "Failed to get APPDATA directory")?;
-    
-    std::fs::create_dir_all(&connections_dir)
-        .map_err(|e| format!("Failed to create directory: {}", e))?;
+    // Launch mstsc.exe
+    std::process::Command::new("mstsc.exe")
+        .arg(&rdp_file_path)
+        .spawn()
+        .map_err(|e| AppError::RdpLaunchError { source: e })?;
     
     Ok(())
 }
@@ -96,36 +118,144 @@ async fn launch_rdp(host: Host) -> Result<(), String> {
 **The ? Operator:**
 - If `Result` is `Ok(value)`, extracts `value`
 - If `Result` is `Err(e)`, immediately returns the error
-- Requires return type to be compatible `Result`
+- Works seamlessly with `AppError` variants
+- Use `.map_err(|e| AppError::Variant { ... })` to convert external errors
 
-### Converting Error Types
+### Trait-Based Error Handling
 
-Different error types need conversion:
+QuickConnect uses **trait abstractions** to isolate unsafe code and provide clean error boundaries:
 
 ```rust
-use std::io;
-use std::env;
+// src-tauri/src/adapters/windows/credential_manager.rs
 
-fn example() -> Result<(), String> {
-    // std::io::Error → String
-    std::fs::write("file.txt", "content")
-        .map_err(|e| format!("Write failed: {}", e))?;
+/// Trait for credential storage operations
+pub trait CredentialManager: Send + Sync {
+    fn save(&self, target: &str, username: &str, password: &str) 
+        -> Result<(), AppError>;
     
-    // VarError → String  
-    let path = std::env::var("APPDATA")
-        .map_err(|_| "APPDATA not found".to_string())?;
+    fn read(&self, target: &str) 
+        -> Result<Option<(String, String)>, AppError>;
     
-    // Windows API Error → String
-    CredWriteW(&cred, 0)
-        .map_err(|e| format!("Credential write failed: {:?}", e))?;
-    
+    fn delete(&self, target: &str) 
+        -> Result<(), AppError>;
+}
+
+/// Windows implementation with unsafe code isolated
+pub struct WindowsCredentialManager;
+
+impl CredentialManager for WindowsCredentialManager {
+    fn save(&self, target: &str, username: &str, password: &str) 
+        -> Result<(), AppError> {
+        unsafe {
+            // Unsafe Windows API call isolated here
+            CredWriteW(&cred, 0)
+                .map_err(|e| AppError::CredentialManagerError {
+                    operation: "save".to_string(),
+                    source: Some(e.into()),
+                })?;
+        }
+        Ok(())
+    }
+}
+```
+
+**Architecture Benefits:**
+- ✅ Unsafe code isolated to adapter layer
+- ✅ Core business logic works with safe traits
+- ✅ Easy to mock for testing
+- ✅ Consistent `AppError` return type
+
+---
+
+## 14.3 AppError Helper Methods
+
+The `AppError` enum includes helper methods for categorization and user-friendly messaging.
+
+### Error Codes for Categorization
+
+```rust
+impl AppError {
+    /// Returns an error code for categorization
+    pub fn code(&self) -> &'static str {
+        match self {
+            AppError::CredentialsNotFound { .. } => "CRED_NOT_FOUND",
+            AppError::CredentialManagerError { .. } => "CRED_MANAGER",
+            AppError::InvalidHostname { .. } => "INVALID_HOSTNAME",
+            AppError::CsvError { .. } => "CSV_ERROR",
+            AppError::LdapConnectionError { .. } => "LDAP_CONNECTION",
+            AppError::LdapBindError { .. } => "LDAP_BIND",
+            AppError::RdpFileError { .. } => "RDP_FILE",
+            AppError::RdpLaunchError { .. } => "RDP_LAUNCH",
+            // ... all variants mapped to codes
+        }
+    }
+}
+```
+
+These codes enable:
+- ✅ Error filtering in logs
+- ✅ Metrics collection
+- ✅ Frontend error categorization
+- ✅ Conditional error handling
+
+### User-Friendly Error Messages
+
+```rust
+impl AppError {
+    /// Returns a user-friendly error message suitable for display
+    pub fn user_message(&self) -> String {
+        match self {
+            AppError::CredentialsNotFound { target } => {
+                if target.starts_with("TERMSRV/") {
+                    format!("No credentials saved for host '{}'", 
+                        target.trim_start_matches("TERMSRV/"))
+                } else {
+                    "No credentials found. Please save your credentials in the login window first.".to_string()
+                }
+            }
+            AppError::InvalidHostname { hostname, reason } => {
+                format!("Invalid hostname '{}': {}", hostname, reason)
+            }
+            AppError::CsvError { operation, .. } => {
+                format!("Failed to {} hosts database", operation)
+            }
+            // ... contextual messages for all variants
+        }
+    }
+}
+```
+
+**Example Usage in Commands:**
+
+```rust
+// src-tauri/src/commands/hosts.rs
+#[tauri::command]
+pub fn save_host(app_handle: tauri::AppHandle, host: Host) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+
+    // Core logic returns AppError; QuickConnect converts that into a UI-safe String.
+    crate::core::hosts::upsert_host(host).map_err(String::from)?;
+
+    // Notify windows to refresh.
+    if let Some(main_window) = app_handle.get_webview_window("main") {
+        let _ = main_window.emit("hosts-updated", ());
+    }
+    if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
+        let _ = hosts_window.emit("hosts-updated", ());
+    }
+
     Ok(())
 }
 ```
 
+This pattern provides:
+- ✅ Technical details for logging (via `Display` trait)
+- ✅ User-friendly messages for UI (via `user_message()`)
+- ✅ Error codes for categorization (via `code()`)
+
 ---
 
-## 14.3 Centralized Error Display System
+## 14.4 Centralized Error Display System
 
 QuickConnect uses a dedicated **error window** to display errors to users.
 
@@ -251,111 +381,135 @@ listen<ErrorPayload>('show-error', (event) => {
 
 ---
 
-## 14.4 Debug Logging System
+## 14.5 Structured Logging with Tracing
 
-QuickConnect implements a comprehensive debug logging system that's **disabled by default** for performance but can be enabled with a command-line flag.
+QuickConnect uses the **tracing ecosystem** for structured, efficient logging. Logging is **disabled by default** and enabled with the `--debug` flag.
 
-### Debug Mode State
+### Why Tracing?
+
+The `tracing` crate provides:
+- ✅ **Structured Logging**: Key-value pairs, not just strings
+- ✅ **Zero-Cost Abstractions**: Minimal overhead when disabled
+- ✅ **Async-Aware**: Tracks execution across async boundaries
+- ✅ **Filtering**: Fine-grained control via `RUST_LOG` environment variable
+
+### Logging Infrastructure
 
 ```rust
+// src-tauri/src/infra/logging.rs
+
 use std::sync::Mutex;
 
-// Global debug mode flag
+/// Global debug mode flag (thread-safe)
 static DEBUG_MODE: Mutex<bool> = Mutex::new(false);
 
-fn set_debug_mode(enabled: bool) {
+pub fn set_debug_mode(enabled: bool) {
     if let Ok(mut flag) = DEBUG_MODE.lock() {
         *flag = enabled;
     }
 }
+
+/// Initialize tracing subscriber (called at startup)
+pub fn init_tracing() -> Result<(), String> {
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+    let log_dir = std::env::var("APPDATA")
+        .map(|p| PathBuf::from(p).join("QuickConnect"))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    
+    std::fs::create_dir_all(&log_dir)
+        .map_err(|e| format!("Failed to create log directory: {}", e))?;
+
+    // Rolling log file appender
+    let file_appender = tracing_appender::rolling::never(
+        &log_dir, 
+        "QuickConnect_Debug.log"
+    );
+
+    // Configure file output layer
+    let file_layer = fmt::layer()
+        .with_writer(file_appender)
+        .with_ansi(false)       // No color codes in file
+        .with_target(true)      // Show module path
+        .with_thread_ids(true)  // Show thread info
+        .with_file(true)        // Show file name
+        .with_line_number(true); // Show line number
+
+    // Environment filter (defaults to INFO level)
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(file_layer)
+        .try_init()
+        .map_err(|e| format!("Failed to initialize: {}", e))?;
+
+    tracing::info!("Tracing initialized successfully");
+    Ok(())
+}
 ```
 
-### The debug_log Function
+### Using Tracing Macros
 
 ```rust
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::PathBuf;
+// In any module
+use tracing::{info, warn, error, debug};
 
-fn debug_log(
-    level: &str,         // INFO, WARN, ERROR, DEBUG
-    category: &str,      // Category like "CREDENTIALS", "RDP_LAUNCH"
-    message: &str,       // Main message
-    error_details: Option<&str>,  // Optional technical details
+// Basic logging
+info!("Application started");
+warn!("Deprecated API used");
+error!("Connection failed");
+
+// Structured logging with fields
+info!(
+    hostname = "server01",
+    port = 3389,
+    "Connecting to RDP server"
+);
+
+// With AppError context
+match launch_rdp(hostname).await {
+    Ok(_) => info!(hostname = hostname, "RDP connection successful"),
+    Err(e) => error!(
+        hostname = hostname,
+        error = %e,
+        code = e.code(),
+        "RDP connection failed"
+    ),
+}
+```
+
+### Legacy debug_log Compatibility
+
+For backward compatibility, a legacy `debug_log` function still exists:
+
+```rust
+pub fn debug_log(
+    level: &str,
+    category: &str,
+    message: &str,
+    error_details: Option<&str>,
 ) {
-    // Check if debug mode is enabled
-    let debug_enabled = DEBUG_MODE.lock().map(|flag| *flag).unwrap_or(false);
+    let debug_enabled = DEBUG_MODE.lock()
+        .map(|flag| *flag)
+        .unwrap_or(false);
     
     if !debug_enabled {
-        return;  // Early exit if debug is off
+        return; // Early exit
     }
 
-    // Determine log file location
-    let log_file = if let Ok(appdata_dir) = std::env::var("APPDATA") {
-        let QuickConnect_dir = PathBuf::from(appdata_dir).join("QuickConnect");
-        let _ = std::fs::create_dir_all(&QuickConnect_dir);
-        QuickConnect_dir.join("QuickConnect_Debug.log")
-    } else {
-        PathBuf::from("QuickConnect_Debug.log")
-    };
-
-    // Check if this is a new file
-    let is_new_file = !log_file.exists();
-
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_file) 
-    {
-        // Write header for new files
-        if is_new_file {
-            let _ = writeln!(file, "{}", "=".repeat(80));
-            let _ = writeln!(file, "QuickConnect Debug Log");
-            let _ = writeln!(file, "{}", "=".repeat(80));
-            let _ = writeln!(file, "This file contains detailed application logs.");
-            let _ = writeln!(file, "To enable: QuickConnect.exe --debug");
-            let _ = writeln!(file, "");
-            let _ = writeln!(file, "Log Levels:");
-            let _ = writeln!(file, "  - INFO:  General information");
-            let _ = writeln!(file, "  - WARN:  Warning messages");
-            let _ = writeln!(file, "  - ERROR: Error messages");
-            let _ = writeln!(file, "  - DEBUG: Debug information");
-            let _ = writeln!(file, "{}", "=".repeat(80));
-            let _ = writeln!(file, "");
-        }
-
-        // Format timestamp
-        use chrono::Local;
-        let timestamp = Local::now()
-            .format("%Y-%m-%d %H:%M:%S%.3f")
-            .to_string();
-
-        // Level indicator
-        let level_indicator = match level {
-            "ERROR" => "[!]",
-            "WARN"  => "[*]",
-            "INFO"  => "[i]",
-            "DEBUG" => "[d]",
-            _       => "[?]",
-        };
-
-        // Build log entry
-        let mut log_entry = format!(
-            "\n{} {} [{:8}] [{}]\n",
-            timestamp, level_indicator, level, category
-        );
-        log_entry.push_str(&format!("Message: {}\n", message));
-
-        if let Some(details) = error_details {
-            log_entry.push_str(&format!("Details: {}\n", details));
-        }
-
-        // Add context based on category
-        match category {
-            "RDP_LAUNCH" => {
-                if let Ok(appdata_dir) = std::env::var("APPDATA") {
-                    let connections_dir = PathBuf::from(appdata_dir)
-                        .join("QuickConnect")
+    // Delegate to tracing macros
+    match level {
+        "ERROR" => error!(category = category, details = ?error_details, "{}", message),
+        "WARN" => warn!(category = category, details = ?error_details, "{}", message),
+        "INFO" => info!(category = category, details = ?error_details, "{}", message),
+        "DEBUG" => debug!(category = category, details = ?error_details, "{}", message),
+        _ => debug!(category = category, details = ?error_details, "{}", message),
+    }
+    
+    // Also write to file directly for legacy format
+    // (implementation details omitted)
                         .join("Connections");
                     log_entry.push_str(&format!(
                         "RDP Files Directory: {:?}\n",
@@ -418,15 +572,20 @@ async fn launch_rdp(host: Host) -> Result<(), String> {
 
 ---
 
-## 14.5 Command-Line Debug Mode
+## 14.6 Command-Line Debug Mode
 
-QuickConnect enables debug logging via command-line arguments.
+QuickConnect enables debug logging via the `--debug` command-line flag.
 
-### Parsing Command-Line Arguments
+### Application Startup with Debug Mode
 
 ```rust
+// src-tauri/src/main.rs
+
+use quick_connect::infra::logging::{init_tracing, set_debug_mode};
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Get command-line arguments
+    // Parse command-line arguments
     let args: Vec<String> = std::env::args().collect();
     
     // Check for --debug flag
@@ -438,7 +597,17 @@ pub fn run() {
         eprintln!("[QuickConnect] Debug mode enabled");
         eprintln!("[QuickConnect] Args: {:?}", args);
 
-        // Show log file location
+        // Set global debug flag
+        set_debug_mode(true);
+        
+        // Initialize tracing subscriber
+        if let Err(e) = init_tracing() {
+            eprintln!("[QuickConnect] Failed to initialize tracing: {}", e);
+        } else {
+            eprintln!("[QuickConnect] Tracing initialized successfully");
+        }
+
+        // Log file location
         if let Ok(appdata_dir) = std::env::var("APPDATA") {
             let log_file = PathBuf::from(appdata_dir)
                 .join("QuickConnect")
@@ -446,57 +615,54 @@ pub fn run() {
             eprintln!("[QuickConnect] Log file: {:?}", log_file);
         }
 
-        // Enable debug mode
-        set_debug_mode(true);
-        
-        // Log startup information
-        debug_log(
-            "INFO",
-            "SYSTEM",
-            "Debug logging enabled via command line argument",
-            Some(&format!("Arguments: {:?}", args)),
+        // Log system information
+        tracing::info!(
+            version = env!("CARGO_PKG_VERSION"),
+            os = std::env::consts::OS,
+            arch = std::env::consts::ARCH,
+            "Application startup"
         );
-        
-        debug_log(
-            "INFO",
-            "SYSTEM",
-            &format!("Application version: {}", env!("CARGO_PKG_VERSION")),
-            None,
-        );
-        
-        debug_log(
-            "INFO",
-            "SYSTEM",
-            &format!("Operating System: {}", std::env::consts::OS),
-            Some(&format!("Architecture: {}", std::env::consts::ARCH)),
-        );
-    } else {
-        eprintln!("[QuickConnect] Starting without debug mode.");
-        eprintln!("[QuickConnect] Use --debug to enable logging.");
     }
 
-    // Continue with Tauri setup...
+    // Build and run Tauri application
     tauri::Builder::default()
-        // ...
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
+        .invoke_handler(tauri::generate_handler![
+            commands::hosts::get_all_hosts,
+            commands::hosts::search_hosts,
+            // ... other commands
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
 ```
 
 ### Running with Debug Mode
 
+**PowerShell:**
 ```powershell
-# Windows
+# Run with debug logging
 .\QuickConnect.exe --debug
 
-# Or
-.\QuickConnect.exe --debug-log
+# Development mode
+npm run tauri -- dev -- --debug
 ```
 
-**Output:**
+**Expected Console Output:**
 ```
 [QuickConnect] Debug mode enabled
 [QuickConnect] Args: ["QuickConnect.exe", "--debug"]
+[QuickConnect] Tracing initialized successfully
 [QuickConnect] Log file: "C:\\Users\\Username\\AppData\\Roaming\\QuickConnect\\QuickConnect_Debug.log"
-[QuickConnect] Debug log initialized
+```
+
+**Log File Output:**
+```
+2024-12-14T10:30:45.123Z INFO quick_connect: Tracing initialized successfully
+2024-12-14T10:30:45.125Z INFO quick_connect: Application startup version="1.0.0" os="windows" arch="x86_64"
+2024-12-14T10:30:45.200Z INFO hosts: Loading hosts from CSV path="C:\\Users\\...\\hosts.csv"
+2024-12-14T10:30:45.210Z INFO hosts: Loaded 15 hosts
 ```
 
 ---

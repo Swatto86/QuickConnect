@@ -1184,7 +1184,7 @@ When the user tries to launch QuickConnect while it's already running:
 - [Windows Credential Manager API](https://docs.microsoft.com/windows/win32/api/wincred/)
 - [Windows Registry API](https://docs.microsoft.com/windows/win32/sysinfo/registry)
 - [Tauri Plugins](https://tauri.app/v1/guides/features/plugin/)
-- [QuickConnect Source Code](../src-tauri/src/lib.rs)
+- [QuickConnect Entry Point (setup + command registration)](../src-tauri/src/lib.rs)
 
 ---
 

@@ -105,9 +105,9 @@ const hosts = await invoke<Host[]>("get_all_hosts");
 
 **QuickConnect Example:**
 ```rust
-// lib.rs - Backend providing data to frontend
+// src-tauri/src/commands/hosts.rs - Backend command wrapper
 #[tauri::command]
-async fn get_all_hosts() -> Result<Vec<Host>, String> {
+pub async fn get_all_hosts() -> Result<Vec<Host>, String> {
     get_hosts()
 }
 ```
@@ -168,6 +168,7 @@ import { invoke } from "@tauri-apps/api/core";
 interface Host {
   hostname: string;
   description: string;
+    last_connected?: string;
 }
 
 // Call a Rust command
@@ -177,7 +178,8 @@ const hosts = await invoke<Host[]>("get_all_hosts");
 await invoke("save_host", {
   host: {
     hostname: "server1.domain.com",
-    description: "Web server"
+        description: "Web server",
+        last_connected: null
   }
 });
 
@@ -197,26 +199,27 @@ use tauri::command;
 struct Host {
     hostname: String,
     description: String,
+    last_connected: Option<String>,
 }
 
 // Synchronous command
 #[tauri::command]
-fn get_all_hosts() -> Result<Vec<Host>, String> {
+async fn get_all_hosts() -> Result<Vec<Host>, String> {
     // Read from file, database, etc.
     Ok(vec![
         Host {
             hostname: "server1.domain.com".to_string(),
             description: "Web server".to_string(),
+            last_connected: None,
         }
     ])
 }
 
 // Asynchronous command
 #[tauri::command]
-async fn save_host(host: Host) -> Result<(), String> {
-    // Perform async operation
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    
+fn save_host(app_handle: tauri::AppHandle, host: Host) -> Result<(), String> {
+    // `app_handle` is injected by Tauri at runtime (the frontend never passes it).
+
     // Save to file...
     Ok(())
 }
@@ -466,39 +469,64 @@ fn delete_host(hostname: String) -> Result<(), String> {
 
 **3. Capabilities and Permissions**
 
-Tauri 2.0 introduces granular permissions:
+QuickConnect uses Tauri 2.0 capabilities to explicitly declare what the frontend is allowed to do.
+
+QuickConnect ships with **two** capability files:
 
 ```json
-// capabilities/default.json
+// src-tauri/capabilities/default.json
 {
-  "permissions": [
-    "core:window:allow-show",
-    "core:window:allow-hide",
-    "shell:allow-open",
-    {
-      "identifier": "fs:allow-read",
-      "allow": [
-        { "path": "$APPDATA/QuickConnect/*" }
-      ]
-    }
-  ]
+    "$schema": "../gen/schemas/desktop-schema.json",
+    "identifier": "default",
+    "description": "Capability for the main window",
+    "windows": ["main", "login", "about", "hosts", "error"],
+    "permissions": [
+        "core:default",
+        "shell:allow-open",
+        "core:app:default",
+        "core:app:allow-app-hide",
+        "core:window:allow-close",
+        "core:window:allow-hide",
+        "core:window:allow-set-position"
+    ]
 }
 ```
+
+```json
+// src-tauri/capabilities/desktop.json
+{
+    "identifier": "desktop-capability",
+    "platforms": ["macOS", "windows", "linux"],
+    "windows": ["main"],
+    "permissions": [
+        "global-shortcut:allow-register",
+        "global-shortcut:allow-unregister",
+        "global-shortcut:allow-is-registered"
+    ]
+}
+```
+
+**Why two files?**
+- `default.json` grants the baseline window/app permissions across all QuickConnect windows.
+- `desktop.json` scopes global shortcut permissions to desktop platforms.
 
 **4. CSP (Content Security Policy)**
 
-Optional additional security layer:
+QuickConnect currently **disables CSP** in its Tauri config:
 
 ```json
-// tauri.conf.json
+// src-tauri/tauri.conf.json
 {
-  "app": {
-    "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'"
+    "app": {
+        "security": {
+            "csp": null
+        }
     }
-  }
 }
 ```
+
+This matches the current implementation and avoids CSP-related breakage during development.
+If you choose to enable CSP later, you must validate your frontend asset loading and any inline scripts/styles against the policy.
 
 ### QuickConnect Security Practices
 
@@ -557,7 +585,201 @@ async fn scan_domain_ldap(domain: String, server: String) -> Result<String, Stri
 
 ---
 
-## 3.5 Application Lifecycle
+## 3.5 QuickConnect's Modular Backend Architecture
+
+QuickConnect demonstrates **best practices** for organizing a Tauri application backend into clear, testable layers.
+
+### The Five-Layer Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│         src-tauri/src/   (Modular Structure)        │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│  ┌─────────────────────────────────────────────┐   │
+│  │  commands/ - Tauri Command Layer           │   │
+│  │  ├─ hosts.rs                                │   │
+│  │  ├─ credentials.rs                          │   │
+│  │  ├─ system.rs                               │   │
+│  │  └─ windows.rs                              │   │
+│  │                                              │   │
+│  │  Responsibilities:                          │   │
+│  │  • Input validation                         │   │
+│  │  • Error conversion (AppError → String)    │   │
+│  │  • Event emission                           │   │
+│  │  • NO business logic                        │   │
+│  └─────────────────────────────────────────────┘   │
+│                       ↓                             │
+│  ┌─────────────────────────────────────────────┐   │
+│  │  core/ - Business Logic Layer              │   │
+│  │  ├─ hosts.rs (401 lines + 470 test lines)  │   │
+│  │  ├─ rdp_launcher.rs (325 + 300 test lines) │   │
+│  │  └─ ldap.rs                                 │   │
+│  │                                              │   │
+│  │  Responsibilities:                          │   │
+│  │  • CRUD operations                          │   │
+│  │  • Business rules                           │   │
+│  │  • Data transformation                      │   │
+│  │  • Pure functions (no Tauri deps)          │   │
+│  └─────────────────────────────────────────────┘   │
+│                       ↓                             │
+│  ┌─────────────────────────────────────────────┐   │
+│  │  adapters/ - External System Interfaces    │   │
+│  │  └─ windows/                                │   │
+│  │     ├─ credential_manager.rs (268 lines)   │   │
+│  │     └─ registry.rs                          │   │
+│  │                                              │   │
+│  │  Responsibilities:                          │   │
+│  │  • Trait abstractions                       │   │
+│  │  • Unsafe code isolation                    │   │
+│  │  • Platform-specific implementations        │   │
+│  └─────────────────────────────────────────────┘   │
+│                       ↓                             │
+│  ┌─────────────────────────────────────────────┐   │
+│  │  infra/ - Infrastructure Layer             │   │
+│  │  ├─ logging.rs (308 lines)                  │   │
+│  │  ├─ paths.rs                                │   │
+│  │  └─ persistence/                            │   │
+│  │     ├─ csv_reader.rs                        │   │
+│  │     └─ csv_writer.rs                        │   │
+│  │                                              │   │
+│  │  Responsibilities:                          │   │
+│  │  • File I/O                                 │   │
+│  │  • Logging setup                            │   │
+│  │  • Path resolution                          │   │
+│  └─────────────────────────────────────────────┘   │
+│                                                     │
+│  ┌─────────────────────────────────────────────┐   │
+│  │  errors.rs - Centralized Error Types       │   │
+│  │  (341 lines)                                │   │
+│  │                                              │   │
+│  │  pub enum AppError {                        │   │
+│  │      CredentialsNotFound { target: String },│   │
+│  │      InvalidHostname { ... },               │   │
+│  │      CsvError { ... },                      │   │
+│  │      // 17 variants total                   │   │
+│  │  }                                           │   │
+│  └─────────────────────────────────────────────┘   │
+│                                                     │
+└─────────────────────────────────────────────────────┘
+```
+
+### Example: Host Management Flow
+
+```
+User clicks "Add Host" button
+          ↓
+┌─────────────────────────────────────┐
+│  Frontend (TypeScript)              │
+│  invoke("upsert_host", { host })    │
+└─────────────────────────────────────┘
+          ↓ IPC
+┌─────────────────────────────────────┐
+│  Commands Layer                     │
+│  src-tauri/src/commands/hosts.rs    │
+│                                     │
+│  #[tauri::command]                  │
+│  pub async fn upsert_host(          │
+│      app_handle: AppHandle,         │
+│      host: Host                     │
+│  ) -> Result<(), String> {          │
+│      // Validate                    │
+│      hosts::upsert_host(host)       │ ← Delegate to core
+│          .map_err(|e| e.user_message())?;
+│                                     │
+│      // Emit event                  │
+│      app_handle.emit("hosts-updated", ())?;
+│      Ok(())                         │
+│  }                                  │
+└─────────────────────────────────────┘
+          ↓
+┌─────────────────────────────────────┐
+│  Core Layer                         │
+│  src-tauri/src/core/hosts.rs        │
+│                                     │
+│  pub fn upsert_host(                │
+│      host: Host                     │
+│  ) -> Result<(), AppError> {        │
+│      // Business logic              │
+│      if host.hostname.is_empty() {  │
+│          return Err(AppError::InvalidHostname { ... });
+│      }                              │
+│                                     │
+│      let mut hosts = get_all_hosts()?;
+│      // ... upsert logic            │
+│                                     │
+│      csv_writer::write_hosts_to_csv(path, &hosts)?;
+│      Ok(())                         │
+│  }                                  │
+└─────────────────────────────────────┘
+          ↓
+┌─────────────────────────────────────┐
+│  CSV Module (Core)                  │
+│  src-tauri/src/core/csv_writer.rs   │
+│                                     │
+│  pub fn write_hosts_to_csv(         │
+│      path: &Path,                   │
+│      hosts: &[Host]                 │
+│  ) -> Result<(), AppError> {        │
+│      let mut writer = csv::Writer::from_path(path)?;
+│      for host in hosts {            │
+│          writer.serialize(host)?;   │
+│      }                              │
+│      Ok(())                         │
+│  }                                  │
+└─────────────────────────────────────┘
+
+Note: In the current codebase, CSV read/write lives in `core/` (not `infra/persistence/`).
+The infrastructure layer still owns path selection via `infra/paths.rs`.
+```
+
+### Benefits of This Architecture
+
+**1. Testability**
+```rust
+// core/ functions are pure - easy to test
+#[test]
+fn test_upsert_host_creates_new() {
+    let (_temp_dir, csv_path) = setup_test_env();
+    let host = create_test_host("server01", "Web Server");
+    
+    // No Tauri dependencies needed!
+    let result = upsert_host_with_path(&csv_path, host);
+    assert!(result.is_ok());
+}
+```
+
+**2. Maintainability**
+- Each module has < 500 lines
+- Clear responsibilities
+- Easy to navigate
+- Changes are localized
+
+**3. Reusability**
+```rust
+// Same core logic used by commands and tests
+pub fn search_hosts(query: &str) -> Result<Vec<Host>, AppError> {
+    // Can be called from:
+    // - commands/hosts.rs
+    // - Integration tests
+    // - Future CLI tool
+}
+```
+
+**4. Safety**
+```rust
+// Unsafe code isolated to adapters/
+// src-tauri/src/adapters/windows/credential_manager.rs
+unsafe {
+    CredWriteW(&cred, 0)?;  // Only unsafe code in one place
+}
+
+// Core and commands are 100% safe Rust
+```
+
+---
+
+## 3.6 Application Lifecycle
 
 Understanding when things happen in a Tauri app:
 
@@ -567,7 +789,7 @@ Understanding when things happen in a Tauri app:
 ├─────────────────────────────────────────────────────┤
 │                                                     │
 │  1. main.rs: Application Entry                     │
-│     └─ fn main() { QuickConnect_lib::run() }           │
+│     └─ fn main() { quickconnect_lib::run() }           │
 │                                                     │
 │  2. lib.rs: Tauri Setup                            │
 │     └─ tauri::Builder::default()                   │
@@ -959,26 +1181,12 @@ for (const host of hosts) {
 
 **Good: Batch operations**
 ```typescript
-await invoke("save_hosts", { hosts });  // 1 IPC call
+// QuickConnect pattern: do the bulk work inside ONE command.
+// Example: scan_domain discovers hosts, writes hosts.csv, and emits "hosts-updated".
+await invoke<string>("scan_domain", { domain, server });  // 1 IPC call
 ```
 
-**QuickConnect Pattern:**
-```rust
-// Efficient: Batch operations
-#[tauri::command]
-fn save_hosts(hosts: Vec<Host>) -> Result<(), String> {
-    let mut wtr = csv::WriterBuilder::new()
-        .from_path("hosts.csv")
-        .map_err(|e| format!("Failed to create writer: {}", e))?;
-    
-    for host in hosts {
-        wtr.write_record(&[&host.hostname, &host.description])?;
-    }
-    
-    wtr.flush()?;
-    Ok(())
-}
-```
+**QuickConnect Note:** QuickConnect does not implement a `save_hosts` command. Bulk host creation happens via `scan_domain`, and per-host updates happen via `save_host`.
 
 ### Async Operations
 
@@ -986,17 +1194,18 @@ Use async for I/O-bound operations:
 
 ```rust
 #[tauri::command]
-async fn scan_domain(domain: String) -> Result<Vec<Host>, String> {
+async fn scan_domain(app_handle: tauri::AppHandle, domain: String, server: String) -> Result<String, String> {
     // Network I/O - use async
-    let (conn, mut ldap) = LdapConnAsync::new(&ldap_url).await?;
-    
-    ldap3::drive!(conn);
-    
-    let (results, _) = ldap.search(&base_dn, Scope::Subtree, filter, attrs)
-        .await?
-        .success()?;
-    
-    Ok(parse_results(results))
+    // QuickConnect delegates LDAP logic to core::ldap and returns a message string.
+    let credentials = crate::commands::get_stored_credentials().await?
+        .ok_or_else(|| "No stored credentials found. Please save your domain credentials in the login window first.".to_string())?;
+
+    let scan_result = crate::core::ldap::scan_domain_for_servers(&domain, &server, &credentials)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // QuickConnect writes hosts.csv + emits "hosts-updated".
+    Ok(format!("Successfully found {} Windows Server(s).", scan_result.count))
 }
 ```
 
@@ -1138,18 +1347,19 @@ Create a multi-step IPC workflow:
 
 ```typescript
 // TODO: Frontend
-// 1. Call "validate_hostname" command
-// 2. If valid, call "check_connectivity" command
-// 3. If reachable, call "save_host" command
-// 4. Display result
+// 1. Validate hostname locally (QuickConnect does this in the frontend)
+// 2. Optionally call "check_host_status" to confirm TCP:3389 reachability
+// 3. Call "save_host" to persist (emits "hosts-updated")
+// 4. Display success or invoke "show_error" on failure
 ```
 
 ```rust
 // TODO: Backend
-// 1. Implement validate_hostname command
-// 2. Implement check_connectivity command (async)
-// 3. Implement save_host command
-// 4. Add proper error handling
+// 1. Use the existing QuickConnect commands:
+//    - save_host(app_handle, host)
+//    - check_host_status(hostname)
+//    - show_error(app_handle, payload)
+// 2. Confirm you emit/listen to "hosts-updated" in the right windows
 ```
 
 ### Exercise 2: Event-Driven Architecture
@@ -1160,7 +1370,7 @@ Implement a progress reporting system:
 // TODO: Backend
 // Create a long-running operation that emits progress events
 #[tauri::command]
-async fn scan_network(app_handle: tauri::AppHandle) -> Result<(), String> {
+async fn example_long_running_task(app_handle: tauri::AppHandle) -> Result<(), String> {
     // Emit progress: 0%, 25%, 50%, 75%, 100%
 }
 ```
@@ -1214,10 +1424,9 @@ async function loadAndDisplayHosts() {
   const allHosts = await invoke<Host[]>("get_all_hosts");
   
   for (const host of allHosts) {
-    const details = await invoke<HostDetails>("get_host_details", { 
-      hostname: host.hostname 
-    });
-    displayHost(host, details);
+        // Anti-pattern: N+1 calls (one per host)
+        const status = await invoke<string>("check_host_status", { hostname: host.hostname });
+        displayHost(host, status);
   }
 }
 ```
@@ -1235,24 +1444,15 @@ async function loadAndDisplayHosts() {
 ```typescript
 async function addHost(hostname: string, description: string) {
   try {
-    // Step 1: Validate
-    const isValid = await invoke<boolean>("validate_hostname", { hostname });
-    if (!isValid) {
-      alert("Invalid hostname format");
-      return;
-    }
-    
-    // Step 2: Check connectivity
-    const isReachable = await invoke<boolean>("check_connectivity", { hostname });
-    if (!isReachable) {
-      const proceed = confirm("Host is not reachable. Save anyway?");
-      if (!proceed) return;
-    }
-    
-    // Step 3: Save
+        // Step 1: Save
     await invoke("save_host", {
       host: { hostname, description }
     });
+
+        // Step 2 (optional): check status
+        // QuickConnect exposes check_host_status(hostname) for TCP:3389 reachability.
+        const status = await invoke<string>("check_host_status", { hostname });
+        console.log("Host status:", status);
     
     alert("Host saved successfully!");
     
@@ -1262,222 +1462,33 @@ async function addHost(hostname: string, description: string) {
 }
 ```
 
-**Backend:**
-```rust
-#[tauri::command]
-fn validate_hostname(hostname: String) -> Result<bool, String> {
-    let hostname_regex = regex::Regex::new(
-        r"^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$"
-    ).unwrap();
-    
-    Ok(hostname_regex.is_match(&hostname) && hostname.len() <= 253)
-}
-
-#[tauri::command]
-async fn check_connectivity(hostname: String) -> Result<bool, String> {
-    use std::process::Command;
-    
-    let output = Command::new("ping")
-        .arg("-n")
-        .arg("1")
-        .arg("-w")
-        .arg("1000")
-        .arg(&hostname)
-        .output()
-        .map_err(|e| format!("Failed to ping: {}", e))?;
-    
-    Ok(output.status.success())
-}
-
-#[derive(serde::Deserialize)]
-struct Host {
-    hostname: String,
-    description: String,
-}
-
-#[tauri::command]
-fn save_host(host: Host) -> Result<(), String> {
-    // Validation already done, just save
-    let mut wtr = csv::WriterBuilder::new()
-        .append(true)
-        .from_path("hosts.csv")
-        .map_err(|e| format!("Failed to open file: {}", e))?;
-    
-    wtr.write_record(&[&host.hostname, &host.description])
-        .map_err(|e| format!("Failed to write: {}", e))?;
-    
-    wtr.flush().map_err(|e| format!("Failed to flush: {}", e))?;
-    
-    Ok(())
-}
-```
+**Backend (QuickConnect):** The real implementation is a thin wrapper that validates, calls `core::hosts`, then emits `hosts-updated` to refresh all windows.
 
 ### Solution 2: Event-Driven Architecture
 
-**Backend:**
-```rust
-#[derive(Clone, serde::Serialize)]
-struct ProgressPayload {
-    current: u32,
-    total: u32,
-    message: String,
-}
+**QuickConnect Example: Emit an update event and let windows refresh themselves.**
 
-#[tauri::command]
-async fn scan_network(app_handle: tauri::AppHandle) -> Result<Vec<String>, String> {
-    let network = "192.168.1";
-    let total = 254u32;
-    let mut reachable = Vec::new();
-    
-    for i in 1..=total {
-        let ip = format!("{}.{}", network, i);
-        
-        // Emit progress
-        app_handle.emit("scan-progress", ProgressPayload {
-            current: i,
-            total,
-            message: format!("Scanning {}", ip),
-        }).ok();
-        
-        // Quick ping check
-        let is_up = tokio::time::timeout(
-            tokio::time::Duration::from_millis(100),
-            check_host(&ip)
-        ).await.is_ok();
-        
-        if is_up {
-            reachable.push(ip);
-        }
-    }
-    
-    app_handle.emit("scan-complete", reachable.len()).ok();
-    
-    Ok(reachable)
-}
-
-async fn check_host(ip: &str) -> bool {
-    // Simplified ping check
-    tokio::process::Command::new("ping")
-        .arg("-n").arg("1")
-        .arg("-w").arg("100")
-        .arg(ip)
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-```
+**Backend:** `save_host`, `delete_host`, and `scan_domain` emit `hosts-updated` to both the `main` and `hosts` windows.
 
 **Frontend:**
 ```typescript
-interface ProgressPayload {
-  current: number;
-  total: number;
-  message: string;
-}
+import { listen } from "@tauri-apps/api/event";
 
-async function startNetworkScan() {
-  const progressBar = document.getElementById("progress") as HTMLProgressElement;
-  const statusText = document.getElementById("status") as HTMLSpanElement;
-  
-  // Listen for progress
-  const unlisten = await listen<ProgressPayload>("scan-progress", (event) => {
-    const { current, total, message } = event.payload;
-    progressBar.value = current;
-    progressBar.max = total;
-    statusText.textContent = `${message} (${current}/${total})`;
-  });
-  
-  // Listen for completion
-  const unlistenComplete = await listen<number>("scan-complete", (event) => {
-    statusText.textContent = `Scan complete! Found ${event.payload} hosts.`;
-  });
-  
-  try {
-    const hosts = await invoke<string[]>("scan_network");
-    console.log("Reachable hosts:", hosts);
-  } catch (error) {
-    statusText.textContent = `Error: ${error}`;
-  } finally {
-    unlisten();
-    unlistenComplete();
-  }
-}
+// src/main.ts listens for updates and refreshes the list
+await listen("hosts-updated", async () => {
+    await loadAllHosts();
+    await checkHostsStatus();
+});
 ```
 
 ### Solution 3: Window Orchestration
 
-**Backend:**
-```rust
-use std::sync::Mutex;
+**QuickConnect Example: Login → Main → Hosts.**
 
-#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
-struct WizardState {
-    step1_data: Option<String>,
-    step2_data: Option<String>,
-    step3_data: Option<String>,
-}
-
-static WIZARD_STATE: Mutex<WizardState> = Mutex::new(WizardState {
-    step1_data: None,
-    step2_data: None,
-    step3_data: None,
-});
-
-#[tauri::command]
-fn save_wizard_step(step: u32, data: String) -> Result<(), String> {
-    let mut state = WIZARD_STATE.lock().unwrap();
-    
-    match step {
-        1 => state.step1_data = Some(data),
-        2 => state.step2_data = Some(data),
-        3 => state.step3_data = Some(data),
-        _ => return Err("Invalid step".to_string()),
-    }
-    
-    Ok(())
-}
-
-#[tauri::command]
-fn get_wizard_state() -> Result<WizardState, String> {
-    Ok(WIZARD_STATE.lock().unwrap().clone())
-}
-
-#[tauri::command]
-fn show_wizard_step(
-    app_handle: tauri::AppHandle,
-    step: u32
-) -> Result<(), String> {
-    // Hide all wizard windows
-    for i in 1..=3 {
-        if let Some(window) = app_handle.get_webview_window(&format!("wizard-step{}", i)) {
-            window.hide().ok();
-        }
-    }
-    
-    // Show requested step
-    if let Some(window) = app_handle.get_webview_window(&format!("wizard-step{}", step)) {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
-    }
-    
-    Ok(())
-}
-```
-
-**Frontend (Step 1):**
-```typescript
-async function nextStep() {
-  const input = (document.getElementById("input") as HTMLInputElement).value;
-  
-  try {
-    await invoke("save_wizard_step", { step: 1, data: input });
-    await invoke("show_wizard_step", { step: 2 });
-  } catch (error) {
-    alert(`Error: ${error}`);
-  }
-}
-```
+QuickConnect uses real window commands instead of a wizard framework:
+- `switch_to_main_window` (after credentials are saved)
+- `show_hosts_window` / `hide_hosts_window` (manage hosts)
+- `show_about`, `toggle_error_window`, etc.
 
 ### Solution 4: Security Audit
 
@@ -1532,7 +1543,7 @@ fn get_system_info() -> Result<SystemInfo, String> {
 ### Solution 5: Performance Optimization
 
 **Issues:**
-1. **N+1 queries**: Loading details one at a time
+1. **N+1 calls**: Calling `check_host_status` one host at a time
 2. **Blocking UI**: Sequential awaits
 3. **No caching**: Repeated requests
 
@@ -1542,43 +1553,22 @@ async function loadAndDisplayHosts() {
   // Load all hosts
   const allHosts = await invoke<Host[]>("get_all_hosts");
   
-  // Display hosts immediately (don't wait for details)
+    // Display hosts immediately (don't block on status checks)
   displayHosts(allHosts);
   
-  // Load all details in parallel
-  const detailsPromises = allHosts.map(host => 
-    invoke<HostDetails>("get_host_details", { hostname: host.hostname })
-  );
-  
-  // Wait for all details
-  const allDetails = await Promise.all(detailsPromises);
-  
-  // Update UI with details
-  allHosts.forEach((host, i) => {
-    updateHostDetails(host.hostname, allDetails[i]);
-  });
-}
+    // Load all statuses in parallel
+    const statuses = await Promise.all(
+        allHosts.map(host => invoke<string>("check_host_status", { hostname: host.hostname }))
+    );
 
-// Even better: Backend optimization
-```
-
-**Backend optimization:**
-```rust
-#[tauri::command]
-async fn get_hosts_with_details() -> Result<Vec<HostWithDetails>, String> {
-    let hosts = get_hosts()?;
-    
-    // Parallel processing
-    let futures = hosts.into_iter().map(|host| async move {
-        let details = get_host_details(&host.hostname).await.ok();
-        HostWithDetails { host, details }
+    // Update UI with status results
+    allHosts.forEach((host, i) => {
+        updateHostStatus(host.hostname, statuses[i]);
     });
-    
-    let results = futures::future::join_all(futures).await;
-    
-    Ok(results)
 }
 ```
+
+If you need to avoid calling `check_host_status` for every host, consider only checking status for visible rows or on-demand.
 
 </details>
 

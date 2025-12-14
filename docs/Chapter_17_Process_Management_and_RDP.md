@@ -5,7 +5,7 @@
 **What You'll Learn:**
 - Creating temporary/persistent configuration files dynamically
 - RDP file format specification and parameters
-- Launching external applications with `ShellExecuteW`
+- Launching external applications (e.g., `mstsc.exe`) from Rust
 - Windows process management and error handling
 - Working with environment variables and file paths
 - TERMSRV credential integration for SSO
@@ -59,7 +59,7 @@ ShellExecuteW(None, &operation, &file, None, None, SW_SHOWNORMAL);
 **Key Differences:**
 - `std::process::Command`: Direct process execution, requires full executable path
 - `ShellExecuteW`: Uses Windows file associations, opens documents naturally
-- QuickConnect uses `ShellExecuteW` to "open" `.rdp` files, letting Windows handle the launch
+- QuickConnect currently launches `mstsc.exe` directly via `std::process::Command`, passing the generated `.rdp` file path as an argument
 
 ---
 
@@ -454,7 +454,16 @@ async fn get_credentials_for_rdp(hostname: &str) -> Result<StoredCredentials, St
 
 Now let's examine the complete RDP launch process from QuickConnect's `launch_rdp` command.
 
-### Complete Launch Flow
+> **📝 Note on Code Organization:** The following example shows a simplified, monolithic `launch_rdp` command for educational purposes to illustrate the complete flow in one place. In the actual QuickConnect implementation (December 2024 refactoring), this functionality is organized into a **modular architecture**:
+> 
+> - [commands/system.rs::launch_rdp()](../src-tauri/src/commands/system.rs) - Thin Tauri command wrapper (21 lines)
+> - [core/rdp_launcher.rs::launch_rdp_connection()](../src-tauri/src/core/rdp_launcher.rs) - Core orchestration logic (325 lines)
+> - [adapters/windows/credential_manager.rs](../src-tauri/src/adapters/windows/credential_manager.rs) - Credential Manager trait abstraction (268 lines)
+> - [core/rdp.rs](../src-tauri/src/core/rdp.rs) - RDP file generation and username parsing helpers
+> 
+> See [Appendix A](Appendix_A_Complete_QuickRDP_Walkthrough.md) for a complete walkthrough of the modular architecture. The educational example below demonstrates the concepts but should not be copied directly into production code.
+
+### Complete Launch Flow (Educational Example)
 
 ```rust
 #[tauri::command]
@@ -648,24 +657,11 @@ cert ignore:i:1\r\n",
         None,
     );
 
-    // STEP 6: Launch RDP file using ShellExecuteW
-    unsafe {
-        let operation = HSTRING::from("open");
-        let file = HSTRING::from(rdp_path.to_string_lossy().as_ref());
-
-        let result = ShellExecuteW(
-            None,          // hwnd
-            &operation,    // lpOperation
-            &file,         // lpFile
-            None,          // lpParameters
-            None,          // lpDirectory
-            SW_SHOWNORMAL, // nShowCmd
-        );
-
-        if result.0 as i32 <= 32 {
-            return Err(format!("Failed to open RDP file. Error code: {}", result.0));
-        }
-    }
+    // STEP 6: Launch mstsc.exe with the generated RDP file
+    std::process::Command::new("mstsc.exe")
+        .arg(rdp_path.to_string_lossy().as_ref())
+        .spawn()
+        .map_err(|e| format!("Failed to launch mstsc.exe: {}", e))?;
 
     debug_log(
         "INFO",
@@ -728,7 +724,7 @@ Check for per-host credentials (TERMSRV/{hostname})
                 ↓
          Write {hostname}.rdp file
                 ↓
-         Launch RDP file with ShellExecuteW
+          Launch mstsc.exe with the .rdp file
                 ↓
          Windows opens mstsc.exe with the RDP file
                 ↓
@@ -741,11 +737,13 @@ Check for per-host credentials (TERMSRV/{hostname})
 
 ---
 
-## 17.7 Launching with ShellExecuteW
+## 17.7 Alternative: Launching with ShellExecuteW
 
 The Windows `ShellExecuteW` API provides a high-level way to "open" files, similar to double-clicking them in Windows Explorer.
 
-### Why ShellExecuteW Over std::process::Command?
+QuickConnect does **not** currently use this approach for RDP launching (it spawns `mstsc.exe` directly), but `ShellExecuteW` is a useful Windows-native option if you want to rely on file associations.
+
+### When ShellExecuteW Can Be Useful
 
 **ShellExecuteW Advantages:**
 1. **Respects file associations:** `.rdp` files automatically open with `mstsc.exe`
@@ -879,7 +877,7 @@ fn launch_rdp_with_command(rdp_file_path: &str) -> Result<(), String> {
 }
 ```
 
-**QuickConnect uses ShellExecuteW** because it's simpler and more Windows-native.
+QuickConnect currently launches `mstsc.exe` directly via `std::process::Command` (passing the `.rdp` file path as an argument) to keep the implementation simple and avoid additional Windows-API `unsafe` code.
 
 ---
 

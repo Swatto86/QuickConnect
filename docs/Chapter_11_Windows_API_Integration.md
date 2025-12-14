@@ -858,65 +858,39 @@ pub fn write_registry_dword(
 
 Let's examine real Windows API usage from the QuickConnect application.
 
-### Example 1: Launching RDP with ShellExecuteW
+### Example 1: Launching RDP (QuickConnect approach)
+
+QuickConnect writes a `.rdp` file under `%APPDATA%\QuickConnect\Connections\` and launches the built-in RDP client by spawning `mstsc.exe` with the `.rdp` file path.
 
 ```rust
-use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
-use windows::core::HSTRING;
 use std::path::PathBuf;
+use std::process::Command;
 
-/// Creates an RDP file and launches it
-/// 
-/// This is the complete flow QuickConnect uses:
-/// 1. Create a temporary .rdp file
-/// 2. Write connection settings to it
-/// 3. Launch it with ShellExecuteW
-#[tauri::command]
-pub fn connect_rdp(
-    hostname: String,
-    username: String,
-    domain: String,
-) -> Result<(), String> {
-    // Get temp directory
-    let temp_dir = std::env::temp_dir();
-    let rdp_file = temp_dir.join(format!("QuickConnect_{}.rdp", hostname));
-    
-    // Create RDP file content
-    let rdp_content = format!(
-        "full address:s:{}\r\n\
-         username:s:{}\\{}\r\n\
-         authentication level:i:2\r\n\
-         compression:i:1\r\n\
-         screen mode id:i:2\r\n",
-        hostname, domain, username
-    );
-    
-    // Write RDP file
-    std::fs::write(&rdp_file, rdp_content)
-        .map_err(|e| format!("Failed to create RDP file: {}", e))?;
-    
-    // Launch RDP file
-    let operation = HSTRING::from("open");
-    let file = HSTRING::from(rdp_file.to_string_lossy().as_ref());
-    let empty = HSTRING::from("");
-    
-    unsafe {
-        let result = ShellExecuteW(
-            HWND(0),
-            &operation,
-            &file,
-            &empty,
-            &empty,
-            SW_SHOW,
-        );
-        
-        if result.0 <= 32 {
-            return Err(format!("Failed to launch RDP: Error {}", result.0));
-        }
-    }
-    
+/// Writes an RDP file and launches it.
+///
+/// Note: In the real app, credential selection and TERMSRV storage are handled
+/// separately (see the credential manager and RDP launcher chapters). This snippet
+/// focuses on the file + process launch portion.
+pub fn write_and_launch_rdp(hostname: &str, rdp_content: &str) -> Result<(), String> {
+    let appdata_dir = std::env::var("APPDATA")
+        .map_err(|_| "Failed to get APPDATA directory".to_string())?;
+
+    let connections_dir = PathBuf::from(appdata_dir)
+        .join("QuickConnect")
+        .join("Connections");
+
+    std::fs::create_dir_all(&connections_dir)
+        .map_err(|e| format!("Failed to create connections directory: {}", e))?;
+
+    let rdp_path = connections_dir.join(format!("{}.rdp", hostname));
+    std::fs::write(&rdp_path, rdp_content)
+        .map_err(|e| format!("Failed to write RDP file: {}", e))?;
+
+    Command::new("mstsc.exe")
+        .arg(&rdp_path)
+        .spawn()
+        .map_err(|e| format!("Failed to launch mstsc.exe: {}", e))?;
+
     Ok(())
 }
 ```
@@ -924,99 +898,44 @@ pub fn connect_rdp(
 ### Example 2: Checking Windows Startup Registry
 
 ```rust
-use windows::Win32::System::Registry::*;
-use windows::Win32::Foundation::ERROR_SUCCESS;
-use windows::core::HSTRING;
+use crate::adapters::{RegistryAdapter, WindowsRegistry};
 
-const STARTUP_KEY: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
+const REGISTRY_RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const APP_NAME: &str = "QuickConnect";
 
-/// Checks if QuickConnect is set to start with Windows
+/// Checks if QuickConnect is set to start with Windows.
+///
+/// QuickConnect reads/writes this via a small registry adapter.
 #[tauri::command]
-pub fn is_autostart_enabled() -> Result<bool, String> {
-    let key_hstring = HSTRING::from(STARTUP_KEY);
-    let app_hstring = HSTRING::from(APP_NAME);
-    
-    unsafe {
-        let mut h_key = HKEY::default();
-        
-        // Open the Run key
-        let result = RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            &key_hstring,
-            0,
-            KEY_READ,
-            &mut h_key,
-        );
-        
-        if result != ERROR_SUCCESS {
-            return Ok(false); // Key doesn't exist = not enabled
-        }
-        
-        // Check if our app entry exists
-        let result = RegQueryValueExW(
-            h_key,
-            &app_hstring,
-            None,
-            None,
-            None,
-            None,
-        );
-        
-        RegCloseKey(h_key);
-        
-        Ok(result == ERROR_SUCCESS)
+pub fn check_autostart() -> Result<bool, String> {
+    let registry = WindowsRegistry::new();
+    match registry.read_string(REGISTRY_RUN_KEY, APP_NAME) {
+        Ok(Some(_)) => Ok(true),
+        Ok(None) => Ok(false),
+        Err(e) => Err(e.to_string()),
     }
 }
 
-/// Enables or disables autostart with Windows
+/// Toggles autostart and returns the new enabled state.
 #[tauri::command]
-pub fn set_autostart(enabled: bool) -> Result<(), String> {
-    if enabled {
-        // Get the path to our executable
-        let exe_path = std::env::current_exe()
-            .map_err(|e| format!("Failed to get exe path: {}", e))?;
-        
-        let exe_str = exe_path.to_string_lossy();
-        
-        write_registry_string(STARTUP_KEY, APP_NAME, &exe_str)?;
+pub fn toggle_autostart() -> Result<bool, String> {
+    let is_enabled = check_autostart()?;
+
+    let registry = WindowsRegistry::new();
+    if is_enabled {
+        registry
+            .delete_value(REGISTRY_RUN_KEY, APP_NAME)
+            .map_err(|e| e.to_string())?;
+        Ok(false)
     } else {
-        // Remove the registry entry
-        delete_registry_value(STARTUP_KEY, APP_NAME)?;
-    }
-    
-    Ok(())
-}
+        let exe_path = std::env::current_exe()
+            .map_err(|e| format!("Failed to get executable path: {}", e))?;
+        let exe_path_str = exe_path.to_string_lossy().to_string();
 
-/// Deletes a registry value
-fn delete_registry_value(key_path: &str, value_name: &str) -> Result<(), String> {
-    let key_hstring = HSTRING::from(key_path);
-    let value_hstring = HSTRING::from(value_name);
-    
-    unsafe {
-        let mut h_key = HKEY::default();
-        
-        let result = RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            &key_hstring,
-            0,
-            KEY_WRITE,
-            &mut h_key,
-        );
-        
-        if result != ERROR_SUCCESS {
-            return Err(format!("Failed to open key: {}", result.0));
-        }
-        
-        let result = RegDeleteValueW(h_key, &value_hstring);
-        
-        RegCloseKey(h_key);
-        
-        if result != ERROR_SUCCESS {
-            return Err(format!("Failed to delete value: {}", result.0));
-        }
-        
-        Ok(())
+        registry
+            .write_string(REGISTRY_RUN_KEY, APP_NAME, &exe_path_str)
+            .map_err(|e| e.to_string())?;
+        Ok(true)
     }
 }
 ```

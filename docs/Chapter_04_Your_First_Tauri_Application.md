@@ -422,7 +422,7 @@ Edit `src-tauri/Cargo.toml` to add required crates:
 
 ```toml
 [dependencies]
-tauri = { version = "2.0.0", features = [] }
+tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"

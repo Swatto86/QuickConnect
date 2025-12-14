@@ -742,6 +742,107 @@ await listen<string>('theme-changed', (event) => {
 - ✅ All windows automatically receive updates
 - ✅ Good for global settings changes
 
+### Additional Window Management Commands
+
+QuickConnect implements several utility commands for specific window operations:
+
+#### toggle_error_window
+
+Toggles the visibility of the error window - shows if hidden, hides if visible:
+
+```rust
+/// Tauri command to toggle the visibility of the error window.
+///
+/// If the error window is currently visible, it will be hidden. If it's hidden,
+/// it will be shown, unminimized, and focused.
+#[tauri::command]
+pub async fn toggle_error_window(app_handle: tauri::AppHandle) -> Result<(), String> {
+    if let Some(error_window) = app_handle.get_webview_window("error") {
+        match error_window.is_visible() {
+            Ok(is_visible) => {
+                if is_visible {
+                    error_window.hide().map_err(|e| e.to_string())?;
+                } else {
+                    error_window.unminimize().map_err(|e| e.to_string())?;
+                    error_window.show().map_err(|e| e.to_string())?;
+                    error_window.set_focus().map_err(|e| e.to_string())?;
+                }
+                Ok(())
+            }
+            Err(e) => Err(format!("Failed to check window visibility: {}", e)),
+        }
+    } else {
+        Err("Error window not found".to_string())
+    }
+}
+```
+
+**Usage:**
+```typescript
+// Toggle error window from a keyboard shortcut or menu
+async function toggleErrorWindow() {
+  try {
+    await invoke('toggle_error_window');
+  } catch (error) {
+    console.error('Failed to toggle error window:', error);
+  }
+}
+
+// Example: Bind to keyboard shortcut
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.shiftKey && e.key === 'E') {
+    toggleErrorWindow();
+  }
+});
+```
+
+#### get_login_window
+
+Gets a reference to the login window and hides it (primarily used internally):
+
+```rust
+/// Gets and hides the login window.
+#[tauri::command]
+pub async fn get_login_window(app_handle: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app_handle.get_webview_window("login") {
+        window.hide().map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Err("Login window not found".to_string())
+    }
+}
+```
+
+**Note:** This command is somewhat misleadingly named - it doesn't actually "get" the window in the sense of returning it, but rather hides it. This is used internally during window transitions. For most use cases, use `close_login_window` or `close_login_and_prepare_main` instead.
+
+**Internal usage:**
+```typescript
+// Legacy command - consider using more specific alternatives
+await invoke('get_login_window'); // Just hides login window
+
+// Preferred alternatives:
+await invoke('close_login_window'); // Hides and updates tracking state
+await invoke('close_login_and_prepare_main'); // Hides login, prepares main
+```
+
+**Window Command Summary:**
+
+| Command | Purpose | Updates LAST_HIDDEN | Best For |
+|---------|---------|---------------------|----------|
+| `show_about` | Show about window | No | Displaying app info |
+| `show_error` | Display error message | No | Error notifications |
+| `toggle_error_window` | Show/hide error window | No | Keyboard shortcuts |
+| `toggle_visible_window` | Toggle login/main | No | System tray clicks |
+| `close_login_window` | Hide login window | Yes → "login" | Auth complete |
+| `close_login_and_prepare_main` | Hide login, prep main | Yes → "main" | Switching to main |
+| `get_login_window` | Hide login (legacy) | No | Internal only |
+| `show_login_window` | Show login window | Yes → "login" | Re-authentication |
+| `switch_to_main_window` | Login → main transition | Yes → "main" | Post-auth flow |
+| `hide_main_window` | Hide main window | No | Manual hide |
+| `show_hosts_window` | Show hosts manager | Yes → "hosts" | Manage hosts |
+| `hide_hosts_window` | Hide hosts, show main | Yes → "main" | Return to main |
+| `quit_app` | Exit application | No | Clean shutdown |
+
 ---
 
 ## 7.6 QuickConnect Multi-Window System Analysis
@@ -797,27 +898,18 @@ Let's examine how QuickConnect orchestrates its five windows:
 
 **Transition to Main:**
 
-```rust
-#[tauri::command]
-async fn login(
-    app_handle: tauri::AppHandle,
-    username: String,
-    password: String,
-) -> Result<(), String> {
-    // Verify credentials...
-    
-    // On success, switch windows
-    if let Some(login) = app_handle.get_webview_window("login") {
-        login.close().map_err(|e| e.to_string())?;
-    }
-    
-    if let Some(main) = app_handle.get_webview_window("main") {
-        main.show().map_err(|e| e.to_string())?;
-        main.set_focus().map_err(|e| e.to_string())?;
-    }
-    
-    Ok(())
-}
+QuickConnect does **not** use a dedicated backend `login` command. Instead, the login window stores the domain credentials and then asks the window manager to switch views.
+
+```typescript
+import { invoke } from '@tauri-apps/api/core';
+
+// From the login UI (index.html, implemented in src/main.ts)
+await invoke('save_credentials', {
+  credentials: { username, password }
+});
+
+// Hide login, show/focus main, and focus the search input
+await invoke('switch_to_main_window');
 ```
 
 ---
@@ -848,14 +940,9 @@ async fn login(
 **Opening Child Windows:**
 
 ```typescript
-// From main.ts - Open hosts window
-document.getElementById('manage-hosts-btn')?.addEventListener('click', async () => {
-  await invoke('show_hosts_window');
-});
-
-// From main.ts - Open about window
-document.getElementById('about-btn')?.addEventListener('click', async () => {
-  await invoke('show_about');
+// From main.html (implemented in src/main.ts) - Open hosts window
+document.getElementById('manageHosts')?.addEventListener('click', async () => {
+    await invoke('show_hosts_window');
 });
 ```
 
@@ -892,14 +979,17 @@ fn save_host(
     app_handle: tauri::AppHandle,
     host: Host,
 ) -> Result<(), String> {
-    // Save host to CSV...
-    
-    // Notify main window to refresh its list
+    // Persist via core logic
+    crate::core::hosts::upsert_host(host).map_err(|e| e.to_string())?;
+
+    // Notify windows to refresh their list
     if let Some(main_window) = app_handle.get_webview_window("main") {
-        main_window.emit("hosts-changed", ())
-            .map_err(|e| e.to_string())?;
+        let _ = main_window.emit("hosts-updated", ());
     }
-    
+    if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
+        let _ = hosts_window.emit("hosts-updated", ());
+    }
+
     Ok(())
 }
 ```
@@ -907,7 +997,7 @@ fn save_host(
 **In Main Window:**
 
 ```typescript
-await listen('hosts-changed', async () => {
+await listen('hosts-updated', async () => {
   // Reload hosts list
   await loadHosts();
   console.log('Hosts list refreshed due to changes');

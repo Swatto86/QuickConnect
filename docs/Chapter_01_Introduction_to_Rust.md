@@ -146,8 +146,11 @@ fn main() {
 
 **QuickConnect Example:**
 ```rust
-// From QuickConnect's lib.rs
-static LAST_HIDDEN_WINDOW: Mutex<String> = Mutex::new(String::new());
+// From QuickConnect - global state guarded by Mutex
+// src-tauri/src/commands/windows.rs
+pub static LAST_HIDDEN_WINDOW: Mutex<String> = Mutex::new(String::new());
+
+// src-tauri/src/infra/logging.rs
 static DEBUG_MODE: Mutex<bool> = Mutex::new(false);
 ```
 
@@ -252,12 +255,30 @@ fn main() {
 
 **QuickConnect Example:**
 ```rust
-// From QuickConnect - borrowing the AppHandle
+// From QuickConnect - borrowing the AppHandle (src-tauri/src/commands/windows.rs)
 #[tauri::command]
-async fn show_hosts_window(app_handle: tauri::AppHandle) -> Result<(), String> {
+pub async fn show_hosts_window(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
-        hosts_window.show().map_err(|e| e.to_string())?;  // Borrows hosts_window
-        hosts_window.set_focus().map_err(|e| e.to_string())?;  // Borrows again
+        // First hide main window
+        if let Some(main_window) = app_handle.get_webview_window("main") {
+            main_window.hide().map_err(|e| e.to_string())?;
+        }
+
+        // Make sure login window is also hidden
+        if let Some(login_window) = app_handle.get_webview_window("login") {
+            login_window.hide().map_err(|e| e.to_string())?;
+        }
+
+        // Now show hosts window
+        hosts_window.unminimize().map_err(|e| e.to_string())?;
+        hosts_window.show().map_err(|e| e.to_string())?;
+        hosts_window.set_focus().map_err(|e| e.to_string())?;
+
+        // Update LAST_HIDDEN_WINDOW
+        if let Ok(mut last_hidden) = LAST_HIDDEN_WINDOW.lock() {
+            *last_hidden = "hosts".to_string();
+        }
+
         Ok(())
     } else {
         Err("Hosts window not found".to_string())
@@ -370,12 +391,12 @@ fn main() {
 
 **QuickConnect Example:**
 ```rust
-// From QuickConnect - iterating and filtering
-async fn search_hosts(query: String) -> Result<Vec<Host>, String> {
-    let hosts = get_hosts()?;
+// From QuickConnect - iterating and filtering (src-tauri/src/core/hosts.rs)
+pub fn search_hosts(query: &str) -> Result<Vec<Host>, AppError> {
+    let hosts = get_all_hosts()?;
     let query = query.to_lowercase();
 
-    let filtered_hosts: Vec<Host> = hosts
+    let filtered: Vec<Host> = hosts
         .into_iter()
         .filter(|host| {
             host.hostname.to_lowercase().contains(&query)
@@ -383,7 +404,7 @@ async fn search_hosts(query: String) -> Result<Vec<Host>, String> {
         })
         .collect();
 
-    Ok(filtered_hosts)
+    Ok(filtered)
 }
 ```
 
@@ -477,18 +498,20 @@ fn main() {
 
 **QuickConnect Example:**
 ```rust
-// From QuickConnect's lib.rs
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-struct Host {
-    hostname: String,
-    description: String,
-    last_connected: Option<String>,
+// From QuickConnect (src-tauri/src/core/types.rs)
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Host {
+    pub hostname: String,
+    pub description: String,
+    pub last_connected: Option<String>,
 }
 
-#[derive(serde::Serialize)]
-struct StoredCredentials {
-    username: String,
-    password: String,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StoredCredentials {
+    pub username: String,
+    pub password: String,
 }
 ```
 
@@ -625,21 +648,36 @@ fn main() {
 
 **QuickConnect Example:**
 ```rust
-// From QuickConnect - error handling throughout
+// From QuickConnect - command-layer error handling (src-tauri/src/commands/credentials.rs)
 #[tauri::command]
-async fn save_credentials(credentials: Credentials) -> Result<(), String> {
+pub async fn save_credentials(credentials: Credentials) -> Result<(), String> {
+    debug_log("INFO", "CREDENTIALS", "Attempting to save credentials", None);
+
     if credentials.username.is_empty() {
-        return Err("Username cannot be empty".to_string());
+        let error = "Username cannot be empty";
+        debug_log(
+            "ERROR",
+            "CREDENTIALS",
+            error,
+            Some("Username parameter was empty"),
+        );
+        return Err(error.to_string());
     }
-    
-    unsafe {
-        // ... Windows API code ...
-        
-        match CredWriteW(&cred, 0) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("Failed to save credentials: {:?}", e)),
-        }
-    }
+
+    CREDENTIAL_MANAGER
+        .save("QuickConnect", &credentials.username, &credentials.password)
+        .map_err(|e| {
+            debug_log(
+                "ERROR",
+                "CREDENTIALS",
+                &format!("Failed to save credentials: {}", e),
+                None,
+            );
+            e.to_string()
+        })?;
+
+    debug_log("INFO", "CREDENTIALS", "Credentials saved successfully", None);
+    Ok(())
 }
 ```
 
@@ -734,25 +772,73 @@ fn main() {
 
 **QuickConnect Example:**
 ```rust
-// From QuickConnect - using Vec to store hosts
-fn get_hosts() -> Result<Vec<Host>, String> {
+// From QuickConnect - using Vec to store hosts (src-tauri/src/core/csv_reader.rs)
+pub fn read_hosts_from_csv(csv_path: &Path) -> Result<Vec<Host>, AppError> {
+    use tracing::{debug, error};
+
+    debug!(
+        path = ?csv_path,
+        "Reading hosts from CSV file"
+    );
+
+    // If file doesn't exist, return empty list (not an error)
+    if !csv_path.exists() {
+        debug!(
+            path = ?csv_path,
+            "CSV file does not exist, returning empty host list"
+        );
+        return Ok(Vec::new());
+    }
+
+    let contents = std::fs::read_to_string(csv_path).map_err(|e| {
+        error!(
+            path = ?csv_path,
+            error = %e,
+            "Failed to read CSV file"
+        );
+        AppError::IoError {
+            path: csv_path.to_string_lossy().to_string(),
+            source: e,
+        }
+    })?;
+
     let mut hosts = Vec::new();
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(true)
         .from_reader(contents.as_bytes());
 
+    // Parse each CSV record into a Host struct
+    // CSV format: hostname, description, last_connected (optional, added in v1.2.0)
     for result in reader.records() {
         match result {
             Ok(record) => {
+                // Minimum 2 columns required (hostname, description)
                 if record.len() >= 2 {
+                    // last_connected column is optional for backwards compatibility
+                    // with v1.1.0 CSV files that didn't have this column
+                    let last_connected = if record.len() >= 3 && !record[2].is_empty() {
+                        Some(record[2].to_string())
+                    } else {
+                        None
+                    };
                     hosts.push(Host {
                         hostname: record[0].to_string(),
                         description: record[1].to_string(),
-                        last_connected: None,
+                        last_connected,
                     });
                 }
             }
-            Err(e) => return Err(format!("Failed to parse CSV: {}", e)),
+            Err(e) => {
+                error!(
+                    path = ?csv_path,
+                    error = %e,
+                    "Failed to parse CSV record"
+                );
+                return Err(AppError::CsvError {
+                    operation: "parse CSV record".to_string(),
+                    source: e,
+                });
+            }
         }
     }
 
@@ -791,9 +877,9 @@ Create a simple host manager similar to QuickConnect:
 ```rust
 #[derive(Debug)]
 struct Host {
-    name: String,
-    ip_address: String,
+    hostname: String,
     description: String,
+    last_connected: Option<String>,
 }
 
 fn main() {
@@ -802,8 +888,8 @@ fn main() {
     // TODO: 
     // 1. Add 3 hosts to the vector
     // 2. Print all hosts
-    // 3. Search for a host by name
-    // 4. Remove a host by name
+    // 3. Search for a host by hostname
+    // 4. Remove a host by hostname
 }
 ```
 
@@ -836,26 +922,26 @@ fn main() {
 ```
 
 ### Exercise 4: Option Handling
-Create a function that finds a host by name:
+Create a function that finds a host by hostname:
 
 ```rust
 struct Host {
-    name: String,
-    ip: String,
+    hostname: String,
+    description: String,
 }
 
-fn find_host(hosts: &Vec<Host>, name: &str) -> Option<&Host> {
+fn find_host(hosts: &Vec<Host>, hostname: &str) -> Option<&Host> {
     // TODO: Return Some(&host) if found, None if not found
 }
 
 fn main() {
     let hosts = vec![
-        Host { name: "server1".to_string(), ip: "192.168.1.10".to_string() },
-        Host { name: "server2".to_string(), ip: "192.168.1.20".to_string() },
+        Host { hostname: "server1.contoso.com".to_string(), description: "Web server".to_string() },
+        Host { hostname: "server2.contoso.com".to_string(), description: "DB server".to_string() },
     ];
     
-    if let Some(host) = find_host(&hosts, "server1") {
-        println!("Found: {} at {}", host.name, host.ip);
+    if let Some(host) = find_host(&hosts, "server1.contoso.com") {
+        println!("Found: {} - {}", host.hostname, host.description);
     } else {
         println!("Host not found");
     }
@@ -925,9 +1011,9 @@ fn main() {
 ```rust
 #[derive(Debug, Clone)]
 struct Host {
-    name: String,
-    ip_address: String,
+    hostname: String,
     description: String,
+    last_connected: Option<String>,
 }
 
 fn main() {
@@ -935,41 +1021,41 @@ fn main() {
     
     // 1. Add hosts
     hosts.push(Host {
-        name: "web-server".to_string(),
-        ip_address: "192.168.1.10".to_string(),
+        hostname: "web-server.contoso.com".to_string(),
         description: "Production web server".to_string(),
+        last_connected: None,
     });
     
     hosts.push(Host {
-        name: "db-server".to_string(),
-        ip_address: "192.168.1.20".to_string(),
+        hostname: "db-server.contoso.com".to_string(),
         description: "Database server".to_string(),
+        last_connected: None,
     });
     
     hosts.push(Host {
-        name: "backup-server".to_string(),
-        ip_address: "192.168.1.30".to_string(),
+        hostname: "backup-server.contoso.com".to_string(),
         description: "Backup storage".to_string(),
+        last_connected: None,
     });
     
     // 2. Print all hosts
     println!("All hosts:");
     for host in &hosts {
-        println!("  {} ({}) - {}", host.name, host.ip_address, host.description);
+        println!("  {} - {}", host.hostname, host.description);
     }
     
     // 3. Search for host
-    let search_name = "db-server";
-    if let Some(host) = hosts.iter().find(|h| h.name == search_name) {
+    let search_hostname = "db-server.contoso.com";
+    if let Some(host) = hosts.iter().find(|h| h.hostname == search_hostname) {
         println!("\nFound: {:?}", host);
     }
     
     // 4. Remove host
-    let remove_name = "backup-server";
-    hosts.retain(|h| h.name != remove_name);
-    println!("\nAfter removing {}:", remove_name);
+    let remove_hostname = "backup-server.contoso.com";
+    hosts.retain(|h| h.hostname != remove_hostname);
+    println!("\nAfter removing {}:", remove_hostname);
     for host in &hosts {
-        println!("  {}", host.name);
+        println!("  {}", host.hostname);
     }
 }
 ```
@@ -1019,31 +1105,31 @@ fn main() {
 ### Solution 4: Option Handling
 ```rust
 struct Host {
-    name: String,
-    ip: String,
+    hostname: String,
+    description: String,
 }
 
-fn find_host<'a>(hosts: &'a Vec<Host>, name: &str) -> Option<&'a Host> {
-    hosts.iter().find(|h| h.name == name)
+fn find_host<'a>(hosts: &'a Vec<Host>, hostname: &str) -> Option<&'a Host> {
+    hosts.iter().find(|h| h.hostname == hostname)
 }
 
 fn main() {
     let hosts = vec![
-        Host { name: "server1".to_string(), ip: "192.168.1.10".to_string() },
-        Host { name: "server2".to_string(), ip: "192.168.1.20".to_string() },
+        Host { hostname: "server1.contoso.com".to_string(), description: "Web server".to_string() },
+        Host { hostname: "server2.contoso.com".to_string(), description: "DB server".to_string() },
     ];
     
     // Test finding existing host
-    if let Some(host) = find_host(&hosts, "server1") {
-        println!("Found: {} at {}", host.name, host.ip);
+    if let Some(host) = find_host(&hosts, "server1.contoso.com") {
+        println!("Found: {} - {}", host.hostname, host.description);
     } else {
         println!("Host not found");
     }
     
     // Test finding non-existent host
-    match find_host(&hosts, "server3") {
-        Some(host) => println!("Found: {} at {}", host.name, host.ip),
-        None => println!("Host 'server3' not found"),
+    match find_host(&hosts, "server3.contoso.com") {
+        Some(host) => println!("Found: {} - {}", host.hostname, host.description),
+        None => println!("Host 'server3.contoso.com' not found"),
     }
 }
 ```

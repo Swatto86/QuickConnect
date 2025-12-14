@@ -181,7 +181,7 @@ This provides TypeScript definitions for:
 
 ### Simple Example
 
-**Rust (`src-tauri/src/lib.rs`):**
+**Rust (backend):**
 ```rust
 #[derive(Serialize, Deserialize)]
 struct User {
@@ -225,11 +225,7 @@ export interface User {
 pub struct Host {
     pub hostname: String,
     pub description: String,
-    pub username: String,
-    pub domain: String,
-    pub created: String,
-    pub modified: String,
-    pub credential_target: Option<String>,
+    pub last_connected: Option<String>,
 }
 ```
 
@@ -238,11 +234,7 @@ pub struct Host {
 export interface Host {
   hostname: string;
   description: string;
-  username: string;
-  domain: string;
-  created: string;      // ISO 8601 date string
-  modified: string;
-  credential_target: string | null;  // Option<String> → string | null
+  last_connected?: string;  // Option<String> → string | undefined
 }
 ```
 
@@ -421,39 +413,30 @@ console.log(task.invalid);       // ❌ Error: Property 'invalid' doesn't exist
 interface Host {
   hostname: string;
   description: string;
-  username: string;
-  domain: string;
-  created: string;
-  modified: string;
-  credential_target: string | null;
+  last_connected?: string | null;
 }
 
 const hosts = await invoke<Host[]>('get_hosts');
 
-// Add new host
-await invoke('add_host', {
-  hostname: 'server01.domain.com',
-  description: 'Production Server',
-  username: 'admin',
-  domain: 'DOMAIN'
+// Add/update a host
+await invoke('save_host', {
+  host: {
+    hostname: 'server01.domain.com',
+    description: 'Production Server'
+  }
 });
 
 // Connect to RDP
-await invoke('connect_rdp', { hostname: 'server01.domain.com' });
+await invoke('launch_rdp', {
+  host: { hostname: 'server01.domain.com', description: 'Production Server' }
+});
 
 // Scan Active Directory
-interface ADHost {
-  name: string;
-  dns_hostname: string;
-  operating_system: string;
-}
-
-const adHosts = await invoke<ADHost[]>('scan_domain', {
-  server: 'dc01.domain.com',
-  username: 'admin',
-  password: 'secret',
-  searchBase: 'DC=domain,DC=com'
+const scanResult = await invoke<string>('scan_domain', {
+  domain: 'domain.com',
+  server: 'dc01.domain.com'
 });
+console.log(scanResult);
 ```
 
 ---
@@ -578,34 +561,22 @@ const unlisten3 = await listen('data-updated', (event) => {
 ### QuickConnect Event Examples
 
 ```typescript
-// Listen for connection status updates
-interface ConnectionStatus {
-  hostname: string;
-  status: 'connecting' | 'connected' | 'disconnected' | 'error';
-  message: string;
-}
-
-await listen<ConnectionStatus>('rdp-status', (event) => {
-  const { hostname, status, message } = event.payload;
-  
-  if (status === 'error') {
-    showErrorNotification(`Failed to connect to ${hostname}: ${message}`);
-  } else if (status === 'connected') {
-    showSuccessNotification(`Connected to ${hostname}`);
-  }
+// 1) Hosts refresh event: emitted after save/delete/scan
+await listen('hosts-updated', async () => {
+  const hosts = await invoke<Host[]>('get_hosts');
+  renderHosts(hosts);
 });
 
-// Listen for domain scan progress
-interface ScanProgress {
-  found: number;
-  total: number;
-  current: string;
-}
+// 2) Connection event: emitted after a successful RDP launch
+await listen<string>('host-connected', (event) => {
+  const hostname = event.payload;
+  showSuccessNotification(`Connected to ${hostname}`);
+});
 
-await listen<ScanProgress>('scan-progress', (event) => {
-  const { found, total, current } = event.payload;
-  updateProgressBar((found / total) * 100);
-  updateStatusText(`Scanning: ${current} (${found}/${total})`);
+// 3) Theme change event: emitted after set_theme
+await listen<string>('theme-changed', (event) => {
+  const theme = event.payload; // "light" | "dark"
+  applyTheme(theme);
 });
 ```
 
@@ -735,7 +706,11 @@ async function initializeApp() {
     renderHosts(hosts);
     applyTheme(theme);
   } catch (error) {
-    showErrorWindow('Failed to initialize application');
+    await invoke('show_error', {
+      message: 'Failed to initialize application',
+      category: 'ERROR',
+      details: String(error)
+    });
   }
 }
 
@@ -745,7 +720,7 @@ async function connectToHost(hostname: string) {
   button?.classList.add('loading');
   
   try {
-    await invoke('connect_rdp', { hostname });
+    await invoke('launch_rdp', { host: { hostname, description: '' } });
     showNotification(`Connected to ${hostname}`, 'success');
   } catch (error) {
     showNotification(`Failed to connect: ${error}`, 'error');
@@ -754,30 +729,15 @@ async function connectToHost(hostname: string) {
   }
 }
 
-// Scan domain with progress updates
-async function scanDomain(server: string, credentials: Credentials) {
-  let progressUnlisten: (() => void) | null = null;
-  
+// Scan domain (credentials are read from stored credentials on the backend)
+async function scanDomain(domain: string, server: string) {
   try {
-    // Set up progress listener
-    progressUnlisten = await listen<ScanProgress>('scan-progress', (event) => {
-      updateProgressBar(event.payload);
-    });
-    
-    // Start scan
-    const hosts = await invoke<ADHost[]>('scan_domain', {
-      server,
-      ...credentials
-    });
-    
-    showNotification(`Found ${hosts.length} hosts`, 'success');
-    return hosts;
+    const result = await invoke<string>('scan_domain', { domain, server });
+    showNotification(result, 'success');
+    return result;
   } catch (error) {
     showNotification(`Scan failed: ${error}`, 'error');
-    return [];
-  } finally {
-    // Clean up listener
-    progressUnlisten?.();
+    return null;
   }
 }
 ```
@@ -975,8 +935,6 @@ async function refreshHosts() {
 interface FormData {
   hostname: string;
   description: string;
-  username: string;
-  domain: string;
 }
 
 function getFormData(formId: string): FormData | null {
@@ -988,8 +946,6 @@ function getFormData(formId: string): FormData | null {
   return {
     hostname: formData.get('hostname') as string,
     description: formData.get('description') as string,
-    username: formData.get('username') as string,
-    domain: formData.get('domain') as string,
   };
 }
 
@@ -1002,7 +958,12 @@ form.addEventListener('submit', async (e) => {
   if (!data) return;
   
   try {
-    await invoke('add_host', data);
+    await invoke('save_host', {
+      host: {
+        hostname: data.hostname,
+        description: data.description
+      }
+    });
     form.reset();
     showNotification('Host added successfully', 'success');
   } catch (error) {
@@ -1032,10 +993,10 @@ const rules: ValidationRule[] = [
     message: 'Hostname contains invalid characters'
   },
   {
-    field: 'username',
-    validate: (v) => v.trim().length > 0,
-    message: 'Username is required'
-  },
+    field: 'description',
+    validate: (v) => v.length <= 500,
+    message: 'Description must be 500 characters or fewer'
+  }
 ];
 
 function validateForm(data: Record<string, string>): string[] {
@@ -1064,7 +1025,12 @@ form.addEventListener('submit', async (e) => {
   }
   
   try {
-    await invoke('add_host', data);
+    await invoke('save_host', {
+      host: {
+        hostname: data.hostname,
+        description: data.description
+      }
+    });
   } catch (error) {
     showNotification(String(error), 'error');
   }
@@ -1116,10 +1082,9 @@ src/
 ```typescript
 import { invoke } from "@tauri-apps/api/core";
 
-interface LoginCredentials {
+interface StoredCredentials {
   username: string;
   password: string;
-  domain: string;
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -1130,25 +1095,18 @@ document.addEventListener("DOMContentLoaded", () => {
     
     const username = (document.getElementById("username") as HTMLInputElement).value;
     const password = (document.getElementById("password") as HTMLInputElement).value;
-    const domain = (document.getElementById("domain") as HTMLInputElement).value;
     
     try {
-      // Verify credentials
-      const valid = await invoke<boolean>("verify_login", {
-        username,
-        password,
-        domain
+      // Save credentials to Windows Credential Manager via backend
+      await invoke("save_credentials", {
+        credentials: {
+          username,
+          password,
+        },
       });
-      
-      if (valid) {
-        // Save credentials
-        await invoke("save_credentials", { username, password, domain });
-        
-        // Open main window
-        await invoke("open_main_window");
-      } else {
-        showError("Invalid credentials");
-      }
+
+      // Switch to main window after successful save
+      await invoke("switch_to_main_window");
     } catch (error) {
       showError(String(error));
     }
@@ -1159,14 +1117,13 @@ document.addEventListener("DOMContentLoaded", () => {
 ### hosts.ts - Hosts Management
 
 ```typescript
+import { invoke } from '@tauri-apps/api/core';
+
 interface Host {
   hostname: string;
   description: string;
-  username: string;
-  domain: string;
-  created: string;
-  modified: string;
-  credential_target: string | null;
+  last_connected?: string;
+  status?: 'online' | 'offline' | 'unknown' | 'checking';
 }
 
 let hosts: Host[] = [];
@@ -1215,7 +1172,7 @@ searchInput?.addEventListener("input", (e) => {
   filteredHosts = hosts.filter(host => 
     host.hostname.toLowerCase().includes(query) ||
     host.description.toLowerCase().includes(query) ||
-    host.username.toLowerCase().includes(query)
+    (host.last_connected ?? '').toLowerCase().includes(query)
   );
   
   renderHosts();
@@ -1224,10 +1181,15 @@ searchInput?.addEventListener("input", (e) => {
 // Global functions for onclick handlers
 window.connectToHost = async function(hostname: string) {
   try {
-    await invoke("connect_rdp", { hostname });
+    // QuickConnect launches RDP via the backend `launch_rdp` command.
+    // The real app typically passes a full Host object; this minimal example
+    // shows the shape of an invoke call.
+    await invoke("launch_rdp", { host: { hostname, description: "" } });
   } catch (error) {
-    await invoke("show_error_window", { 
-      message: `Failed to connect to ${hostname}: ${error}` 
+    await invoke("show_error", {
+      message: `Failed to connect to ${hostname}: ${error}`,
+      category: "RDP_LAUNCH",
+      details: String(error),
     });
   }
 };
@@ -1248,7 +1210,11 @@ window.deleteHost = async function(hostname: string) {
     await invoke("delete_host", { hostname });
     await loadHosts();
   } catch (error) {
-    await invoke("show_error_window", { message: String(error) });
+    await invoke("show_error", {
+      message: String(error),
+      category: "CSV_OPERATIONS",
+      details: String(error),
+    });
   }
 };
 ```
@@ -1296,8 +1262,10 @@ container.innerHTML = `<p>${escapeHtml(userInput)}</p>`;
 try {
   await invoke("risky_operation");
 } catch (error) {
-  await invoke("show_error_window", { 
-    message: String(error) 
+  await invoke("show_error", {
+    message: String(error),
+    category: "ERROR",
+    details: String(error),
   });
 }
 ```
@@ -2120,7 +2088,768 @@ currentUser.set(null);
 
 ---
 
-## 5.12 Key Takeaways
+## 5.12 Frontend Utility Modules
+
+QuickConnect organizes reusable functionality into dedicated utility modules located in `src/utils/`. This modular architecture promotes code reuse, testability, and maintainability across all windows.
+
+### Module Architecture
+
+**Directory Structure:**
+```
+src/utils/
+├── index.ts        # Central export hub
+├── validation.ts   # Input validation and sanitization
+├── ui.ts           # UI interactions and notifications
+├── errors.ts       # Error categorization and styling
+└── hosts.ts        # Host filtering and display logic
+```
+
+**Import Pattern:**
+```typescript
+// Individual imports
+import { isValidFQDN, escapeHtml } from './utils/validation';
+import { showNotification } from './utils/ui';
+
+// Batch imports from index
+import { isValidFQDN, showNotification, filterHosts } from './utils';
+```
+
+---
+
+### 5.12.1 Validation Module (`validation.ts`)
+
+**Purpose:** Input validation and XSS prevention
+
+The validation module provides robust validation for user input, particularly for network identifiers and credentials. All validation functions are thoroughly tested with 101 unit tests plus property-based testing.
+
+**Core Functions:**
+
+**`isValidFQDN(hostname: string): boolean`**
+Validates Fully Qualified Domain Names according to RFC standards:
+
+```typescript
+// Implementation highlights
+export function isValidFQDN(hostname: string): boolean {
+  // Reject empty or whitespace-only input
+  if (!hostname || !hostname.trim()) return false;
+  
+  // Reject IP addresses (192.168.1.1)
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return false;
+  
+  // Require at least one dot
+  if (!hostname.includes('.')) return false;
+  
+  // Validate format: labels separated by dots
+  const labels = hostname.toLowerCase().split('.');
+  
+  // Each label must:
+  // - Be 1-63 characters
+  // - Start/end with alphanumeric
+  // - Contain only alphanumeric and hyphens
+  const labelRegex = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+  
+  return labels.every(label => {
+    if (label.length === 0 || label.length > 63) return false;
+    return labelRegex.test(label);
+  }) && labels[labels.length - 1].length >= 2; // TLD at least 2 chars
+}
+
+// Usage examples
+isValidFQDN('server.company.com')      // ✅ true
+isValidFQDN('db-01.internal.corp.net') // ✅ true
+isValidFQDN('192.168.1.1')             // ❌ false - IP address
+isValidFQDN('localhost')               // ❌ false - no domain
+isValidFQDN('server-.company.com')     // ❌ false - trailing hyphen
+isValidFQDN('server.c')                // ❌ false - TLD too short
+```
+
+**`isValidDomain(domain: string): boolean`**
+Validates domain names (similar to FQDN but less strict):
+
+```typescript
+export function isValidDomain(domain: string): boolean {
+  if (!domain || !domain.trim()) return false;
+  
+  // Allow single-label domains (e.g., "WORKGROUP")
+  const labels = domain.toLowerCase().split('.');
+  const labelRegex = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+  
+  return labels.every(label => {
+    if (label.length === 0 || label.length > 63) return false;
+    return labelRegex.test(label);
+  });
+}
+
+// Usage examples
+isValidDomain('WORKGROUP')             // ✅ true - single label OK
+isValidDomain('company.com')           // ✅ true
+isValidDomain('192.168.1.1')          // ❌ false
+```
+
+**`isValidServerName(hostname: string, domain: string): boolean`**
+Validates that a server belongs to a specific domain:
+
+```typescript
+export function isValidServerName(hostname: string, domain: string): boolean {
+  if (!hostname || !domain) return false;
+  
+  const lowerHost = hostname.toLowerCase();
+  const lowerDomain = domain.toLowerCase();
+  
+  // Server must end with .domain
+  return lowerHost.endsWith(`.${lowerDomain}`) &&
+         isValidFQDN(hostname);
+}
+
+// Usage examples
+isValidServerName('server.company.com', 'company.com')       // ✅ true
+isValidServerName('db.internal.company.com', 'company.com')  // ✅ true
+isValidServerName('server.other.com', 'company.com')         // ❌ false
+```
+
+**`escapeHtml(unsafe: string): string`**
+Prevents XSS attacks by escaping HTML entities:
+
+```typescript
+export function escapeHtml(unsafe: string): string {
+  return unsafe
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+// Usage example - Safe display of user input
+const userInput = '<script>alert("XSS")</script>';
+const safe = escapeHtml(userInput);
+// Result: "&lt;script&gt;alert(&quot;XSS&quot;)&lt;/script&gt;"
+
+// Used when displaying host descriptions
+descriptionEl.textContent = escapeHtml(host.description);
+```
+
+**`validateCredentials(username: string, password: string): string | null`**
+Validates login credentials, returning error message or null:
+
+```typescript
+export function validateCredentials(
+  username: string,
+  password: string
+): string | null {
+  if (!username.trim()) {
+    return 'Username is required';
+  }
+  if (!password.trim()) {
+    return 'Password is required';
+  }
+  if (username.length < 3) {
+    return 'Username must be at least 3 characters';
+  }
+  return null; // Valid
+}
+
+// Usage in login form
+const error = validateCredentials(usernameInput.value, passwordInput.value);
+if (error) {
+  showNotification(error, 'error');
+  return;
+}
+```
+
+**Test Coverage:**
+- `validation.test.ts`: 101 unit tests covering edge cases
+- `validation.property.test.ts`: Property-based tests using `fast-check` for fuzzing with 10,000+ generated inputs
+
+---
+
+### 5.12.2 UI Module (`ui.ts`)
+
+**Purpose:** Consistent UI interactions across all windows
+
+The UI module provides unified notification handling, button state management, and form utilities. With 74 unit tests, it ensures consistent behavior across main, login, hosts, about, and error windows.
+
+**Core Functions:**
+
+**`showNotification(message: string, type: NotificationType, options?: NotificationOptions)`**
+Displays toast notifications with DaisyUI styling:
+
+```typescript
+type NotificationType = 'success' | 'error' | 'info' | 'warning';
+
+interface NotificationOptions {
+  duration?: number;      // Auto-dismiss time (ms), default 3000
+  position?: 'top' | 'bottom';  // Default 'top'
+}
+
+export function showNotification(
+  message: string,
+  type: NotificationType,
+  options: NotificationOptions = {}
+): void {
+  const { duration = 3000, position = 'top' } = options;
+  
+  // Create notification element
+  const notification = document.createElement('div');
+  notification.className = `alert ${getNotificationColorClasses(type)} 
+    shadow-lg max-w-md animate-slide-in`;
+  notification.setAttribute('role', 'alert');
+  notification.setAttribute('aria-live', 'polite');
+  
+  // Note: We intentionally don't display 'error' type
+  // Error notifications route to error window for detailed display
+  if (type !== 'error') {
+    const icon = getIconForType(type);
+    notification.innerHTML = `
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        ${icon}
+      </svg>
+      <span>${escapeHtml(message)}</span>
+    `;
+  } else {
+    notification.innerHTML = `<span>${escapeHtml(message)}</span>`;
+  }
+  
+  // Position notification
+  const container = document.getElementById(`notification-container-${position}`);
+  if (container) {
+    container.appendChild(notification);
+  }
+  
+  // Auto-dismiss
+  if (duration > 0) {
+    setTimeout(() => {
+      notification.classList.add('animate-slide-out');
+      setTimeout(() => notification.remove(), 300);
+    }, duration);
+  }
+}
+
+// Usage examples
+showNotification('Host added successfully', 'success');
+showNotification('Connecting to server...', 'info', { duration: 5000 });
+showNotification('Invalid hostname format', 'warning');
+showNotification('Connection failed', 'error', { position: 'bottom' });
+```
+
+**`getNotificationColorClasses(type: NotificationType): string`**
+Returns DaisyUI-compatible CSS classes:
+
+```typescript
+export function getNotificationColorClasses(type: NotificationType): string {
+  switch (type) {
+    case 'success': return 'alert-success text-success-content';
+    case 'error':   return 'alert-error text-error-content';
+    case 'info':    return 'alert-info text-info-content';
+    case 'warning': return 'alert-warning text-warning-content';
+  }
+}
+```
+
+**`setButtonsEnabled(enabled: boolean, ...buttons: HTMLButtonElement[])`**
+Manages button state during async operations:
+
+```typescript
+export function setButtonsEnabled(
+  enabled: boolean,
+  ...buttons: HTMLButtonElement[]
+): void {
+  buttons.forEach(button => {
+    button.disabled = !enabled;
+    
+    if (enabled) {
+      button.classList.remove('loading');
+    } else {
+      button.classList.add('loading');
+    }
+  });
+}
+
+// Usage example - Prevent double-clicks during RDP launch
+const connectButton = document.getElementById('connectBtn') as HTMLButtonElement;
+const cancelButton = document.getElementById('cancelBtn') as HTMLButtonElement;
+
+setButtonsEnabled(false, connectButton, cancelButton);
+
+try {
+  await invoke('launch_rdp_session', { hostname });
+  showNotification('Connected successfully', 'success');
+} finally {
+  setButtonsEnabled(true, connectButton, cancelButton);
+}
+```
+
+**`getFormData(formId: string): Record<string, string>`**
+Extracts form data safely:
+
+```typescript
+export function getFormData(formId: string): Record<string, string> {
+  const form = document.getElementById(formId) as HTMLFormElement;
+  if (!form) return {};
+  
+  const formData = new FormData(form);
+  const data: Record<string, string> = {};
+  
+  formData.forEach((value, key) => {
+    data[key] = value.toString().trim();
+  });
+  
+  return data;
+}
+
+// Usage
+const loginData = getFormData('loginForm');
+// { username: 'alice', password: '***', domain: 'company.com' }
+```
+
+**`clearForm(formId: string): void`**
+Resets form to initial state:
+
+```typescript
+export function clearForm(formId: string): void {
+  const form = document.getElementById(formId) as HTMLFormElement;
+  if (form) {
+    form.reset();
+    
+    // Also clear any validation states
+    form.querySelectorAll('.input-error').forEach(el => {
+      el.classList.remove('input-error');
+    });
+  }
+}
+```
+
+**Test Coverage:**
+- `ui.test.ts`: 74 tests for core UI functions
+- `ui-main.test.ts`, `ui-login.test.ts`, `ui-hosts.test.ts`: Integration tests for window-specific behavior
+
+---
+
+### 5.12.3 Errors Module (`errors.ts`)
+
+**Purpose:** Error categorization and visual representation
+
+The errors module provides sophisticated error handling, categorizing errors by severity and generating appropriate CSS classes for the error window. With 85 unit tests, it ensures consistent error display across all scenarios.
+
+**Core Functions:**
+
+**`getSeverityFromCategory(category: string): 'critical' | 'error' | 'warning' | 'info'`**
+Maps error categories to severity levels:
+
+```typescript
+export function getSeverityFromCategory(
+  category: string
+): 'critical' | 'error' | 'warning' | 'info' {
+  const lowerCategory = category.toLowerCase();
+  
+  if (lowerCategory.includes('critical') || 
+      lowerCategory.includes('fatal')) {
+    return 'critical';
+  }
+  
+  if (lowerCategory.includes('error') || 
+      lowerCategory.includes('fail')) {
+    return 'error';
+  }
+  
+  if (lowerCategory.includes('warn')) {
+    return 'warning';
+  }
+  
+  return 'info';
+}
+
+// Usage examples
+getSeverityFromCategory('Authentication')      // 'error'
+getSeverityFromCategory('Network Failure')     // 'error'
+getSeverityFromCategory('Configuration')       // 'info'
+getSeverityFromCategory('Critical System Error') // 'critical'
+```
+
+**`getSeverityColor(severity: string): string`**
+Returns DaisyUI badge color classes:
+
+```typescript
+export function getSeverityColor(severity: string): string {
+  switch (severity.toLowerCase()) {
+    case 'critical': return 'badge-error';
+    case 'error':    return 'badge-error';
+    case 'warning':  return 'badge-warning';
+    case 'info':     return 'badge-info';
+    default:         return 'badge-neutral';
+  }
+}
+
+// Usage in error display
+const badge = document.createElement('span');
+badge.className = `badge ${getSeverityColor(error.severity)}`;
+badge.textContent = error.severity.toUpperCase();
+```
+
+**`getBorderColor(severity: string): string`**
+Returns Tailwind CSS border classes with dark mode support:
+
+```typescript
+export function getBorderColor(severity: string): string {
+  switch (severity.toLowerCase()) {
+    case 'critical': return 'border-error dark:border-error';
+    case 'error':    return 'border-error dark:border-error';
+    case 'warning':  return 'border-warning dark:border-warning';
+    case 'info':     return 'border-info dark:border-info';
+    default:         return 'border-neutral dark:border-neutral-700';
+  }
+}
+
+// Usage in error card
+errorCard.className = `card border-l-4 ${getBorderColor(error.severity)}`;
+```
+
+**`filterErrors(errors: ErrorInfo[], searchTerm: string): ErrorInfo[]`**
+Case-insensitive search across all error fields:
+
+```typescript
+interface ErrorInfo {
+  category: string;
+  message: string;
+  details?: string;
+  timestamp: string;
+  severity: string;
+}
+
+export function filterErrors(
+  errors: ErrorInfo[],
+  searchTerm: string
+): ErrorInfo[] {
+  if (!searchTerm.trim()) return errors;
+  
+  const term = searchTerm.toLowerCase();
+  
+  return errors.filter(error => 
+    error.category.toLowerCase().includes(term) ||
+    error.message.toLowerCase().includes(term) ||
+    error.details?.toLowerCase().includes(term) ||
+    error.timestamp.toLowerCase().includes(term)
+  );
+}
+
+// Usage with search input
+const searchInput = document.getElementById('errorSearch') as HTMLInputElement;
+searchInput.addEventListener('input', (e) => {
+  const filtered = filterErrors(allErrors, e.target.value);
+  renderErrors(filtered);
+});
+```
+
+**`sortErrors(errors: ErrorInfo[], sortBy: 'timestamp' | 'severity' | 'category'): ErrorInfo[]`**
+Sorts errors by specified field:
+
+```typescript
+export function sortErrors(
+  errors: ErrorInfo[],
+  sortBy: 'timestamp' | 'severity' | 'category'
+): ErrorInfo[] {
+  const severityOrder = { critical: 0, error: 1, warning: 2, info: 3 };
+  
+  return [...errors].sort((a, b) => {
+    if (sortBy === 'severity') {
+      return severityOrder[a.severity] - severityOrder[b.severity];
+    }
+    if (sortBy === 'timestamp') {
+      return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+    }
+    return a.category.localeCompare(b.category);
+  });
+}
+```
+
+**Test Coverage:**
+- `errors.test.ts`: 85 tests covering severity mapping, CSS generation, filtering, and edge cases
+
+---
+
+### 5.12.4 Hosts Module (`hosts.ts`)
+
+**Purpose:** Host filtering, sorting, and display logic
+
+The hosts module provides high-performance filtering and sorting for large host lists (tested with 1000+ hosts). With 61 unit tests, it ensures consistent search highlighting and date handling.
+
+**Core Functions:**
+
+**`filterHosts(hosts: Host[], searchTerm: string): Host[]`**
+Case-insensitive search across hostname and description:
+
+```typescript
+interface Host {
+  hostname: string;
+  description: string;
+  last_connected?: string;
+}
+
+export function filterHosts(hosts: Host[], searchTerm: string): Host[] {
+  if (!searchTerm.trim()) return hosts;
+  
+  const term = searchTerm.toLowerCase();
+  
+  return hosts.filter(host =>
+    host.hostname.toLowerCase().includes(term) ||
+    host.description.toLowerCase().includes(term)
+  );
+}
+
+// Usage example
+const searchInput = document.getElementById('hostSearch') as HTMLInputElement;
+searchInput.addEventListener('input', (e) => {
+  const filtered = filterHosts(allHosts, e.target.value);
+  renderHosts(filtered);
+});
+```
+
+**`highlightMatches(text: string, searchTerm: string): string`**
+Wraps matching text in `<mark>` tags for visual highlighting:
+
+```typescript
+export function highlightMatches(text: string, searchTerm: string): string {
+  if (!searchTerm.trim()) return escapeHtml(text);
+  
+  const escaped = escapeHtml(text);
+  const term = escapeHtml(searchTerm);
+  
+  // Case-insensitive replace with highlight
+  const regex = new RegExp(`(${term})`, 'gi');
+  return escaped.replace(regex, '<mark class="bg-yellow-300 dark:bg-yellow-600">$1</mark>');
+}
+
+// Usage in host display
+hostCard.innerHTML = `
+  <h3>${highlightMatches(host.hostname, searchTerm)}</h3>
+  <p>${highlightMatches(host.description, searchTerm)}</p>
+`;
+// Result: "db-<mark>server</mark>-01.company.com" when searching "server"
+```
+
+**`sortHostsByHostname(hosts: Host[], ascending: boolean = true): Host[]`**
+Alphabetical sorting by hostname:
+
+```typescript
+export function sortHostsByHostname(
+  hosts: Host[],
+  ascending: boolean = true
+): Host[] {
+  return [...hosts].sort((a, b) => {
+    const compare = a.hostname.localeCompare(b.hostname);
+    return ascending ? compare : -compare;
+  });
+}
+```
+
+**`sortHostsByLastConnected(hosts: Host[], ascending: boolean = false): Host[]`**
+Sorts by last connection date (most recent first by default):
+
+```typescript
+export function sortHostsByLastConnected(
+  hosts: Host[],
+  ascending: boolean = false
+): Host[] {
+  return [...hosts].sort((a, b) => {
+    // Hosts without dates go to end
+    if (!a.last_connected && !b.last_connected) return 0;
+    if (!a.last_connected) return 1;
+    if (!b.last_connected) return -1;
+    
+    const dateA = parseDate(a.last_connected).getTime();
+    const dateB = parseDate(b.last_connected).getTime();
+    
+    return ascending ? (dateA - dateB) : (dateB - dateA);
+  });
+}
+
+// Usage example
+const sortedHosts = sortHostsByLastConnected(allHosts);
+// Most recently connected hosts appear first
+```
+
+**`parseDate(dateStr: string): Date`**
+Parses UK format dates (DD/MM/YYYY HH:MM:SS):
+
+```typescript
+export function parseDate(dateStr: string): Date {
+  // Format: "14/12/2024 09:30:45"
+  const [datePart, timePart] = dateStr.split(' ');
+  const [day, month, year] = datePart.split('/').map(Number);
+  const [hours, minutes, seconds] = timePart.split(':').map(Number);
+  
+  return new Date(year, month - 1, day, hours, minutes, seconds);
+}
+```
+
+**`formatDate(date: Date): string`**
+Formats date to UK format:
+
+```typescript
+export function formatDate(date: Date): string {
+  const day = date.getDate().toString().padStart(2, '0');
+  const month = (date.getMonth() + 1).toString().padStart(2, '0');
+  const year = date.getFullYear();
+  const hours = date.getHours().toString().padStart(2, '0');
+  const minutes = date.getMinutes().toString().padStart(2, '0');
+  const seconds = date.getSeconds().toString().padStart(2, '0');
+  
+  return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+}
+
+// Usage
+const now = new Date();
+formatDate(now); // "14/12/2024 09:30:45"
+```
+
+**`hasDuplicateHostname(hosts: Host[], hostname: string, excludeIndex?: number): boolean`**
+Checks for hostname conflicts:
+
+```typescript
+export function hasDuplicateHostname(
+  hosts: Host[],
+  hostname: string,
+  excludeIndex?: number
+): boolean {
+  return hosts.some((host, index) => {
+    if (excludeIndex !== undefined && index === excludeIndex) {
+      return false; // Skip the host being edited
+    }
+    return host.hostname.toLowerCase() === hostname.toLowerCase();
+  });
+}
+
+// Usage when adding/editing hosts
+if (hasDuplicateHostname(allHosts, newHostname)) {
+  showNotification('Hostname already exists', 'error');
+  return;
+}
+```
+
+**Test Coverage:**
+- `hosts.test.ts`: 61 tests covering filtering, sorting, date parsing, and edge cases with special characters
+
+---
+
+### 5.12.5 Module Integration Example
+
+Here's how these modules work together in a complete workflow:
+
+```typescript
+// main.ts - Host management workflow
+import {
+  isValidFQDN,
+  escapeHtml,
+  showNotification,
+  setButtonsEnabled,
+  filterHosts,
+  sortHostsByLastConnected,
+  highlightMatches,
+  getSeverityFromCategory
+} from './utils';
+
+async function addHost() {
+  const hostnameInput = document.getElementById('hostname') as HTMLInputElement;
+  const descInput = document.getElementById('description') as HTMLInputElement;
+  const addButton = document.getElementById('addBtn') as HTMLButtonElement;
+  
+  const hostname = hostnameInput.value.trim();
+  const description = descInput.value.trim();
+  
+  // Validation
+  if (!isValidFQDN(hostname)) {
+    showNotification('Invalid hostname format. Must be a valid FQDN.', 'warning');
+    hostnameInput.focus();
+    return;
+  }
+  
+  // Disable UI during operation
+  setButtonsEnabled(false, addButton);
+  
+  try {
+    await invoke('create_host', {
+      hostname: escapeHtml(hostname),
+      description: escapeHtml(description)
+    });
+    
+    showNotification('Host added successfully', 'success');
+    
+    // Refresh and sort list
+    const hosts = await invoke<Host[]>('get_all_hosts');
+    const sorted = sortHostsByLastConnected(hosts);
+    renderHosts(sorted);
+    
+    // Clear form
+    hostnameInput.value = '';
+    descInput.value = '';
+    
+  } catch (error) {
+    const severity = getSeverityFromCategory('Host Management');
+    showNotification(`Failed to add host: ${error}`, 'error');
+    
+    // Log to error window
+    await invoke('log_error', {
+      category: 'Host Management',
+      message: `Failed to add host ${hostname}`,
+      details: String(error),
+      severity
+    });
+    
+  } finally {
+    setButtonsEnabled(true, addButton);
+  }
+}
+
+function renderHosts(hosts: Host[]) {
+  const searchTerm = (document.getElementById('search') as HTMLInputElement).value;
+  const filtered = filterHosts(hosts, searchTerm);
+  const container = document.getElementById('hostsList');
+  
+  container.innerHTML = filtered.map(host => `
+    <div class="card bg-base-200">
+      <div class="card-body">
+        <h3 class="card-title">${highlightMatches(host.hostname, searchTerm)}</h3>
+        <p>${highlightMatches(host.description, searchTerm)}</p>
+        ${host.last_connected ? `<small>Last: ${host.last_connected}</small>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+```
+
+---
+
+### Key Benefits of This Architecture
+
+✅ **Separation of Concerns**
+- Business logic separated from UI
+- Each module has single responsibility
+- Easy to locate and modify functionality
+
+✅ **Testability**
+- Pure functions with predictable outputs
+- 321 tests across 4 utility modules
+- Property-based testing for validation
+- 80% code coverage enforced
+
+✅ **Reusability**
+- Functions used across multiple windows
+- Consistent behavior everywhere
+- No code duplication
+
+✅ **Type Safety**
+- Full TypeScript coverage
+- IntelliSense support
+- Compile-time error detection
+
+✅ **Performance**
+- Optimized for 1000+ hosts
+- Efficient filtering and sorting
+- Minimal DOM manipulation
+
+---
+
+## 5.13 Key Takeaways
 
 ✅ **TypeScript provides essential type safety**
 - Catch errors at compile time
@@ -2148,6 +2877,13 @@ currentUser.set(null);
 - Global state for shared data
 - LocalStorage for persistence
 - Observable pattern for reactivity
+
+✅ **Frontend utility modules provide reusable functionality**
+- `validation.ts` - Input validation and XSS prevention (101 tests)
+- `ui.ts` - Notifications and UI interactions (74 tests)
+- `errors.ts` - Error categorization and styling (85 tests)
+- `hosts.ts` - Filtering, sorting, and display logic (61 tests)
+- 321 tests ensure reliability across all modules
 
 ---
 

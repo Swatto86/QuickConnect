@@ -55,7 +55,7 @@ One of the simplest commands in QuickConnect:
 
 ```rust
 #[tauri::command]
-async fn quit_app(app_handle: tauri::AppHandle) {
+pub async fn quit_app(app_handle: tauri::AppHandle) {
     app_handle.exit(0);
 }
 ```
@@ -96,32 +96,23 @@ fn add_numbers(a: i32, b: i32) -> i32 {
 **QuickConnect Example**: Checking Windows theme
 
 ```rust
+use crate::adapters::{RegistryAdapter, WindowsRegistry};
+
 #[tauri::command]
-fn get_windows_theme() -> Result<String, String> {
-    unsafe {
-        // Read from Windows Registry
-        let key_path: Vec<u16> =
-            OsStr::new("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-
-        let mut hkey = HKEY::default();
-
-        let result = RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR::from_raw(key_path.as_ptr()),
-            0,
-            KEY_READ,
-            &mut hkey as *mut HKEY,
-        );
-
-        if result.is_err() {
-            return Ok("dark".to_string());
+pub fn get_windows_theme() -> Result<String, String> {
+    let registry = WindowsRegistry::new();
+    let key_path = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+    
+    match registry.read_dword(key_path, "AppsUseLightTheme") {
+        Ok(Some(value)) => {
+            // Value is 0 for dark, 1 for light
+            if value == 0 {
+                Ok("dark".to_string())
+            } else {
+                Ok("light".to_string())
+            }
         }
-
-        // ... rest of registry reading logic
-        // Returns "dark" or "light"
+        _ => Ok("dark".to_string()), // Default to dark
     }
 }
 ```
@@ -150,34 +141,53 @@ async fn fetch_data_from_api(url: String) -> Result<String, String> {
 
 ```rust
 #[tauri::command]
-async fn scan_domain(
+pub async fn scan_domain(
     app_handle: tauri::AppHandle,
     domain: String,
     server: String,
 ) -> Result<String, String> {
-    // This involves network I/O with LDAP server
-    debug_log("INFO", "LDAP_SCAN", 
-        &format!("Scanning domain: {} on server: {}", domain, server), None);
+    // Set hosts window to always on top during scan
+    if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
+        let _ = hosts_window.set_always_on_top(true);
+    }
 
-    // Connect to LDAP (async operation)
-    let ldap_url = format!("ldap://{}:389", server);
-    let (conn, mut ldap) = match LdapConnAsync::new(&ldap_url).await {
-        Ok(conn) => conn,
-        Err(e) => return Err(format!("Failed to connect: {}", e)),
-    };
+    // Get credentials
+    let credentials = commands::get_stored_credentials().await?.ok_or_else(|| {
+        "No stored credentials found. Please save your domain credentials in the login window first."
+            .to_string()
+    })?;
 
-    // Drive the connection
-    ldap3::drive!(conn);
+    // Perform LDAP scan using core module
+    let result = core::ldap::scan_domain_for_servers(&domain, &server, &credentials)
+        .await
+        .map_err(|e| e.to_string());
 
-    // Perform LDAP bind (async)
-    let credentials = get_stored_credentials().await?;
-    ldap.simple_bind(&credentials.username, &credentials.password).await?;
+    // Reset window always on top
+    if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
+        let _ = hosts_window.set_always_on_top(false);
+    }
 
-    // Search for hosts (async)
-    let (rs, _) = ldap.search(&base_dn, Scope::Subtree, filter, attrs).await?;
+    // Write results to CSV if successful
+    if let Ok(scan_result) = &result {
+        let csv_path = crate::infra::get_hosts_csv_path()?;
+        core::csv_writer::write_hosts_to_csv(&csv_path, &scan_result.hosts)
+            .map_err(|e| e.to_string())?;
 
-    // Process results...
-    Ok(format!("Found {} hosts", rs.len()))
+        // Emit UI events
+        if let Some(main_window) = app_handle.get_webview_window("main") {
+            let _ = main_window.emit("hosts-updated", ());
+        }
+        if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
+            let _ = hosts_window.emit("hosts-updated", ());
+        }
+
+        Ok(format!(
+            "Successfully found {} Windows Server(s).",
+            scan_result.count
+        ))
+    } else {
+        result.map(|r| format!("Successfully found {} Windows Server(s).", r.count))
+    }
 }
 ```
 
@@ -263,46 +273,20 @@ await invoke('save_credentials', {
 ### QuickConnect Example: Saving a Host
 
 ```rust
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-struct Host {
-    hostname: String,
-    description: String,
-    last_connected: Option<String>,
-}
+use crate::core::types::Host;
+use tauri::{Emitter, Manager};
 
 #[tauri::command]
-fn save_host(host: Host) -> Result<(), String> {
-    // Validate hostname
-    if host.hostname.trim().is_empty() {
-        return Err("Hostname cannot be empty".to_string());
+pub fn save_host(app_handle: tauri::AppHandle, host: Host) -> Result<(), String> {
+    crate::core::hosts::upsert_host(host).map_err(|e| e.to_string())?;
+
+    if let Some(main_window) = app_handle.get_webview_window("main") {
+        let _ = main_window.emit("hosts-updated", ());
+    }
+    if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
+        let _ = hosts_window.emit("hosts-updated", ());
     }
 
-    // Read existing hosts
-    let mut hosts = get_hosts()?;
-
-    // Update or add
-    if let Some(idx) = hosts.iter().position(|h| h.hostname == host.hostname) {
-        hosts[idx] = host; // Update existing
-    } else {
-        hosts.push(host); // Add new
-    }
-
-    // Write back to CSV
-    let mut wtr = csv::WriterBuilder::new()
-        .from_path("hosts.csv")
-        .map_err(|e| format!("Failed to create CSV writer: {}", e))?;
-
-    wtr.write_record(&["hostname", "description", "last_connected"])?;
-
-    for host in hosts {
-        wtr.write_record(&[
-            &host.hostname,
-            &host.description,
-            &host.last_connected.unwrap_or_default(),
-        ])?;
-    }
-
-    wtr.flush()?;
     Ok(())
 }
 ```
@@ -369,30 +353,16 @@ The most common pattern in QuickConnect:
 ```rust
 #[tauri::command]
 async fn get_stored_credentials() -> Result<Option<StoredCredentials>, String> {
-    unsafe {
-        let target_name: Vec<u16> = OsStr::new("QuickConnect")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
+    // QuickConnect uses an adapter around Windows Credential Manager.
+    use crate::adapters::{CredentialManager, WindowsCredentialManager};
 
-        let mut pcred = std::ptr::null_mut();
+    static CREDENTIAL_MANAGER: once_cell::sync::Lazy<WindowsCredentialManager> =
+        once_cell::sync::Lazy::new(WindowsCredentialManager::new);
 
-        match CredReadW(
-            PCWSTR::from_raw(target_name.as_ptr()),
-            CRED_TYPE_GENERIC,
-            0,
-            &mut pcred,
-        ) {
-            Ok(_) => {
-                let cred = &*(pcred as *const CREDENTIALW);
-                // Extract username and password...
-                Ok(Some(StoredCredentials { username, password }))
-            }
-            Err(_) => {
-                // No credentials found - not an error, just return None
-                Ok(None)
-            }
-        }
+    match CREDENTIAL_MANAGER.read("QuickConnect") {
+        Ok(Some((username, password))) => Ok(Some(StoredCredentials { username, password })),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
     }
 }
 ```
@@ -775,7 +745,7 @@ Use a schema language like JSON Schema or Protocol Buffers to define types once,
 
 QuickConnect defines types in both Rust and TypeScript:
 
-**Rust** (`src-tauri/src/lib.rs`):
+**Rust** (`src-tauri/src/core/types.rs`):
 
 ```rust
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -989,7 +959,7 @@ async function toggleAutostart() {
 **Key Techniques:**
 - Returns the new state (`bool`) so UI can update
 - Separates read (`check_autostart`) from write (`enable_autostart`, `disable_autostart`)
-- Uses Windows Registry API (unsafe code)
+- Uses a registry adapter (no unsafe blocks in the command layer)
 - Handles errors gracefully
 
 ### Example 3: Launch RDP
@@ -1000,111 +970,41 @@ This is one of the most complex commands in QuickConnect:
 
 ```rust
 #[tauri::command]
-async fn launch_rdp(host: Host) -> Result<(), String> {
-    debug_log("INFO", "RDP_LAUNCH", 
-        &format!("Starting RDP launch for host: {}", host.hostname), None);
+async fn launch_rdp(app_handle: tauri::AppHandle, host: Host) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
 
-    // 1. Get credentials (per-host or global)
-    let credentials = match get_host_credentials(host.hostname.clone()).await? {
-        Some(creds) => creds,
-        None => {
-            get_stored_credentials().await?
-                .ok_or("No credentials found".to_string())?
-        }
-    };
+    // QuickConnect keeps the command layer thin:
+    // - core::rdp_launcher handles: credential selection, TERMSRV storage, .rdp writing,
+    //   spawning `mstsc.exe`, and recent-connections updates.
+    // - the command layer handles UI events and window/tray coordination.
+    crate::core::rdp_launcher::launch_rdp_connection(
+        &host,
+        |hostname| async move {
+            crate::commands::get_host_credentials(hostname)
+                .await
+                .map_err(|e| crate::AppError::CredentialManagerError {
+                    operation: "get host credentials".to_string(),
+                    source: Some(anyhow::anyhow!(e)),
+                })
+        },
+        || async {
+            crate::commands::get_stored_credentials()
+                .await
+                .map_err(|e| crate::AppError::CredentialManagerError {
+                    operation: "get stored credentials".to_string(),
+                    source: Some(anyhow::anyhow!(e)),
+                })
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
-    // 2. Parse username into domain and username
-    let (domain, username) = if credentials.username.contains('\\') {
-        let parts: Vec<&str> = credentials.username.splitn(2, '\\').collect();
-        (parts[0].to_string(), parts[1].to_string())
-    } else if credentials.username.contains('@') {
-        let parts: Vec<&str> = credentials.username.splitn(2, '@').collect();
-        (parts[1].to_string(), parts[0].to_string())
-    } else {
-        (String::new(), credentials.username.clone())
-    };
-
-    // 3. Save credentials to TERMSRV/{hostname} for SSO
-    unsafe {
-        let password_wide: Vec<u16> = OsStr::new(&credentials.password)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let target_name: Vec<u16> = 
-            OsStr::new(&format!("TERMSRV/{}", host.hostname))
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let username_wide: Vec<u16> = OsStr::new(&username)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let cred = CREDENTIALW {
-            Type: CRED_TYPE_GENERIC,
-            TargetName: PWSTR(target_name.as_ptr() as *mut u16),
-            CredentialBlobSize: (password_wide.len() * 2) as u32,
-            CredentialBlob: password_wide.as_ptr() as *mut u8,
-            Persist: CRED_PERSIST_LOCAL_MACHINE,
-            UserName: PWSTR(username_wide.as_ptr() as *mut u16),
-            // ... other fields ...
-        };
-
-        CredWriteW(&cred, 0)
-            .map_err(|e| format!("Failed to save RDP credentials: {:?}", e))?;
-    }
-
-    // 4. Create RDP file in AppData
-    let appdata_dir = std::env::var("APPDATA")
-        .map_err(|_| "Failed to get APPDATA directory")?;
-    let connections_dir = PathBuf::from(&appdata_dir)
-        .join("QuickConnect")
-        .join("Connections");
-
-    std::fs::create_dir_all(&connections_dir)?;
-
-    let rdp_path = connections_dir.join(format!("{}.rdp", host.hostname));
-
-    // 5. Write RDP file content
-    let rdp_content = format!(
-        "full address:s:{}\r\n\
-         username:s:{}\r\n\
-         domain:s:{}\r\n\
-         // ... many more settings ...",
-        host.hostname, username, domain
-    );
-
-    std::fs::write(&rdp_path, rdp_content.as_bytes())?;
-
-    // 6. Launch RDP file
-    unsafe {
-        let operation = HSTRING::from("open");
-        let file = HSTRING::from(rdp_path.to_string_lossy().as_ref());
-
-        let result = ShellExecuteW(
-            None,
-            &operation,
-            &file,
-            None,
-            None,
-            SW_SHOWNORMAL,
-        );
-
-        if result.0 as i32 <= 32 {
-            return Err(format!("Failed to open RDP file. Error code: {}", result.0));
+    // Update last connected timestamp and tell the UI to refresh.
+    if crate::commands::hosts::update_last_connected(&host.hostname).is_ok() {
+        if let Some(main_window) = app_handle.get_webview_window("main") {
+            let _ = main_window.emit("host-connected", &host.hostname);
         }
     }
-
-    // 7. Update recent connections
-    if let Ok(mut recent) = load_recent_connections() {
-        recent.add_connection(host.hostname.clone(), host.description.clone());
-        let _ = save_recent_connections(&recent);
-    }
-
-    // 8. Update last connected timestamp
-    update_last_connected(&host.hostname)?;
 
     Ok(())
 }
@@ -1154,7 +1054,7 @@ async function connectToHost(host: Host) {
 After defining commands, you must register them in your Tauri setup:
 
 ```rust
-// In src-tauri/src/lib.rs
+// In src-tauri/src/core/types.rs
 pub fn run() {
     tauri::Builder::default()
         .plugin(/* ... */)

@@ -101,6 +101,11 @@
     - Build production-ready installers
     - Distribute your application professionally
 
+22. [**Chapter 22: Host Status Checking and Application Management**](Chapter_22_Host_Status_and_Application_Management.md)
+    - Implement online/offline host detection
+    - Build application reset system
+    - Manage bulk host operations
+
 ---
 
 ## Appendices

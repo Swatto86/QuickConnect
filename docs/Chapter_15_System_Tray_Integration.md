@@ -88,7 +88,7 @@ The tray icon functionality is built into Tauri 2.0's core. Add the `tray-icon` 
 
 ```toml
 [dependencies]
-tauri = { version = "2.0.0", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon"] }
 ```
 
 **Explanation:**
@@ -844,7 +844,14 @@ match toggle_autostart() {
    // ✅ Good - Spawn async task
    .on_menu_event(|app, event| {
        tauri::async_runtime::spawn(async move {
-           launch_rdp(hostname).await;
+           // QuickConnect launch_rdp expects an AppHandle + Host
+           let hostname = "server.domain.com";
+           let host = crate::core::types::Host {
+               hostname: hostname.to_string(),
+               description: String::new(),
+               last_connected: None,
+           };
+           let _ = crate::commands::system::launch_rdp(app.clone(), host).await;
        });
    })
    
@@ -1379,7 +1386,432 @@ TrayIconBuilder::with_id("main")
 
 ---
 
-## 15.16 Further Reading
+## 15.16 Building Dynamic State-Aware Menus
+
+QuickConnect implements sophisticated dynamic menu building that reflects the current application state. The `build_tray_menu()` function in [commands/system.rs](../src-tauri/src/commands/system.rs#L384) creates menus with visual indicators for theme and autostart status.
+
+### The build_tray_menu Command
+
+```rust
+use tauri::menu::{Menu, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, Submenu, SubmenuBuilder};
+use crate::adapters::WindowsRegistry;
+
+/// Builds the system tray menu with current state indicators.
+///
+/// Creates a menu with:
+/// - Theme submenu with checkmarks showing current theme
+/// - Autostart item with checkmark if enabled
+/// - Recent connections (if any)
+/// - Standard items (Show/Quit)
+///
+/// # Visual Indicators
+/// The menu uses checkmarks (✓) to show current state:
+/// - "✓ Light Theme" or "✓ Dark Theme" in theme submenu
+/// - "✓ Autostart with Windows" or "✗ Autostart with Windows"
+///
+/// # Returns
+/// * `Ok(())` - Menu built successfully
+/// * `Err(String)` - Error building menu
+#[tauri::command]
+pub fn build_tray_menu(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let tray = app_handle.tray_by_id("main")
+        .ok_or("Failed to get tray icon")?;
+    
+    // Get current theme from registry
+    let registry = WindowsRegistry::new();
+    let current_theme = registry
+        .get_string("Software\\QuickConnect", "Theme")
+        .unwrap_or_else(|_| "dark".to_string());
+    
+    // Check if autostart is enabled
+    let autostart_enabled = check_autostart_internal().unwrap_or(false);
+    
+    // Build theme submenu with checkmarks
+    let light_label = if current_theme == "light" {
+        "✓ Light Theme"
+    } else {
+        "  Light Theme"
+    };
+    
+    let dark_label = if current_theme == "dark" {
+        "✓ Dark Theme"
+    } else {
+        "  Dark Theme"
+    };
+    
+    let light_item = MenuItemBuilder::with_id("theme-light", light_label)
+        .build(&app_handle)
+        .map_err(|e| e.to_string())?;
+    
+    let dark_item = MenuItemBuilder::with_id("theme-dark", dark_label)
+        .build(&app_handle)
+        .map_err(|e| e.to_string())?;
+    
+    let theme_menu = SubmenuBuilder::new(&app_handle, "Theme")
+        .item(&light_item)
+        .item(&dark_item)
+        .build()
+        .map_err(|e| e.to_string())?;
+    
+    // Build autostart menu item with indicator
+    let autostart_label = if autostart_enabled {
+        "✓ Autostart with Windows"
+    } else {
+        "✗ Autostart with Windows"
+    };
+    
+    let autostart_item = MenuItemBuilder::with_id("toggle-autostart", autostart_label)
+        .build(&app_handle)
+        .map_err(|e| e.to_string())?;
+    
+    // Get recent connections for submenu
+    let recent_connections = match crate::commands::get_recent_connections().await {
+        Ok(connections) if !connections.is_empty() => Some(connections),
+        _ => None,
+    };
+    
+    // Build main menu
+    let mut menu_builder = MenuBuilder::new(&app_handle);
+    
+    // Add show/hide main window
+    let show_item = MenuItemBuilder::with_id("show", "Show QuickConnect")
+        .build(&app_handle)
+        .map_err(|e| e.to_string())?;
+    menu_builder = menu_builder.item(&show_item);
+    
+    menu_builder = menu_builder.separator();
+    
+    // Add recent connections submenu if available
+    if let Some(connections) = recent_connections {
+        let mut recent_submenu = SubmenuBuilder::new(&app_handle, "Recent Connections");
+        
+        for connection in connections.iter().take(10) {
+            let item = MenuItemBuilder::with_id(
+                &format!("connect-{}", connection.hostname),
+                &connection.hostname
+            )
+            .build(&app_handle)
+            .map_err(|e| e.to_string())?;
+            
+            recent_submenu = recent_submenu.item(&item);
+        }
+        
+        let recent_menu = recent_submenu.build()
+            .map_err(|e| e.to_string())?;
+        
+        menu_builder = menu_builder.item(&recent_menu);
+        menu_builder = menu_builder.separator();
+    }
+    
+    // Add theme submenu
+    menu_builder = menu_builder.item(&theme_menu);
+    
+    // Add autostart toggle
+    menu_builder = menu_builder.item(&autostart_item);
+    
+    menu_builder = menu_builder.separator();
+    
+    // Add about
+    let about_item = MenuItemBuilder::with_id("about", "About")
+        .build(&app_handle)
+        .map_err(|e| e.to_string())?;
+    menu_builder = menu_builder.item(&about_item);
+    
+    // Add quit
+    let quit_item = PredefinedMenuItem::quit(&app_handle, Some("Quit QuickConnect"))
+        .map_err(|e| e.to_string())?;
+    menu_builder = menu_builder.item(&quit_item);
+    
+    // Build and set the menu
+    let menu = menu_builder.build()
+        .map_err(|e| e.to_string())?;
+    
+    tray.set_menu(Some(menu))
+        .map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+// Internal helper function
+fn check_autostart_internal() -> Result<bool, String> {
+    use crate::adapters::RegistryReader;
+    
+    let registry = WindowsRegistry::new();
+    match registry.get_string(
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        "QuickConnect"
+    ) {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false),
+    }
+}
+```
+
+### When to Rebuild the Menu
+
+The menu should be rebuilt whenever state changes:
+
+```rust
+// After theme change
+#[tauri::command]
+pub async fn set_theme(
+    app_handle: tauri::AppHandle,
+    theme: String
+) -> Result<(), String> {
+    // Save theme preference
+    let registry = WindowsRegistry::new();
+    registry.set_string("Software\\QuickConnect", "Theme", &theme)
+        .map_err(|e| e.to_string())?;
+    
+    // Emit event to windows
+    app_handle.emit("theme-changed", &theme)
+        .map_err(|e| e.to_string())?;
+    
+    // Rebuild tray menu to show new checkmark
+    build_tray_menu(app_handle)?;
+    
+    Ok(())
+}
+
+// After autostart toggle
+#[tauri::command]
+pub async fn toggle_autostart(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    let currently_enabled = check_autostart_internal()?;
+    
+    if currently_enabled {
+        disable_autostart()?;
+    } else {
+        enable_autostart(&app_handle)?;
+    }
+    
+    // Rebuild menu to update checkmark
+    build_tray_menu(app_handle)?;
+    
+    Ok(!currently_enabled)
+}
+```
+
+### Frontend: Triggering Menu Rebuilds
+
+```typescript
+// After changing theme
+async function setTheme(theme: 'light' | 'dark') {
+  try {
+    await invoke('set_theme', { theme });
+    // Menu automatically rebuilt on backend
+    document.documentElement.setAttribute('data-theme', theme);
+  } catch (error) {
+    console.error('Failed to set theme:', error);
+  }
+}
+
+// Toggling autostart
+async function toggleAutostart() {
+  try {
+    const enabled = await invoke<boolean>('toggle_autostart');
+    // Menu automatically rebuilt on backend
+    showNotification(
+      enabled 
+        ? 'Autostart enabled' 
+        : 'Autostart disabled',
+      'success'
+    );
+  } catch (error) {
+    console.error('Failed to toggle autostart:', error);
+  }
+}
+```
+
+### Visual Indicators: Best Practices
+
+**Checkmark Patterns:**
+```rust
+// Pattern 1: Checkmark vs Empty Space
+let label = if is_active {
+    "✓ Option Name"
+} else {
+    "  Option Name"  // Two spaces for alignment
+};
+
+// Pattern 2: Checkmark vs X
+let label = if is_enabled {
+    "✓ Feature Enabled"
+} else {
+    "✗ Feature Disabled"
+};
+
+// Pattern 3: Bullet Point Indicator
+let label = if is_selected {
+    "● Selected Item"
+} else {
+    "○ Unselected Item"
+};
+```
+
+**Unicode Characters for Indicators:**
+- `✓` (U+2713) - Check mark
+- `✗` (U+2717) - Ballot X
+- `●` (U+25CF) - Black circle
+- `○` (U+25CB) - White circle
+- `◉` (U+25C9) - Fisheye
+- `▪` (U+25AA) - Black small square
+- `▫` (U+25AB) - White small square
+
+### Dynamic Submenu: Recent Connections
+
+```rust
+// Loading recent connections for menu
+let recent_connections = match crate::commands::get_recent_connections().await {
+    Ok(connections) if !connections.is_empty() => {
+        // Limit to 10 most recent
+        connections.into_iter().take(10).collect::<Vec<_>>()
+    }
+    _ => vec![],
+};
+
+// Building submenu dynamically
+if !recent_connections.is_empty() {
+    let mut recent_submenu = SubmenuBuilder::new(&app_handle, "Recent Connections");
+    
+    for connection in recent_connections {
+        let item = MenuItemBuilder::with_id(
+            &format!("connect-{}", connection.hostname),
+            &format!("{} ({})", connection.hostname, connection.username)
+        )
+        .build(&app_handle)?;
+        
+        recent_submenu = recent_submenu.item(&item);
+    }
+    
+    menu_builder = menu_builder.item(&recent_submenu.build()?);
+}
+```
+
+### Handling Dynamic Menu Events
+
+```rust
+// In tray event handler
+tray.on_menu_event(move |app, event| {
+    match event.id.as_ref() {
+        // Theme switching
+        "theme-light" => {
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = set_theme(app_clone, "light".to_string()).await;
+            });
+        }
+        "theme-dark" => {
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = set_theme(app_clone, "dark".to_string()).await;
+            });
+        }
+        
+        // Autostart toggle
+        "toggle-autostart" => {
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = toggle_autostart(app_clone).await;
+            });
+        }
+        
+        // Recent connection selected
+        id if id.starts_with("connect-") => {
+            let hostname = id.strip_prefix("connect-").unwrap().to_string();
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                // Launch RDP to this hostname
+                // (Implementation depends on your RDP launch command)
+                let _ = launch_rdp(app_clone, hostname, None).await;
+            });
+        }
+        
+        _ => {}
+    }
+});
+```
+
+### Testing Dynamic Menus
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_checkmark_labels() {
+        // Test theme labels
+        let light_active = "✓ Light Theme";
+        let light_inactive = "  Light Theme";
+        assert_ne!(light_active, light_inactive);
+        
+        // Test autostart labels
+        let autostart_on = "✓ Autostart with Windows";
+        let autostart_off = "✗ Autostart with Windows";
+        assert_ne!(autostart_on, autostart_off);
+    }
+    
+    #[tokio::test]
+    async fn test_menu_rebuild() {
+        // This would be an integration test with actual app handle
+        // Here we just verify the logic structure
+        let enabled = true;
+        let label = if enabled {
+            "✓ Autostart with Windows"
+        } else {
+            "✗ Autostart with Windows"
+        };
+        assert_eq!(label, "✓ Autostart with Windows");
+    }
+}
+```
+
+### Performance Considerations
+
+**Menu Rebuild Frequency:**
+- ✅ Rebuild on state changes (theme, autostart, connections)
+- ✅ Rebuild on window show/hide (optional)
+- ❌ Don't rebuild on every tray click
+- ❌ Don't rebuild on mouse hover
+
+**Caching Recent Connections:**
+```rust
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+// Cache recent connections to avoid file I/O on every menu build
+lazy_static! {
+    static ref RECENT_CONNECTIONS_CACHE: Arc<RwLock<Option<Vec<RecentConnection>>>> = 
+        Arc::new(RwLock::new(None));
+}
+
+async fn get_cached_recent_connections() -> Vec<RecentConnection> {
+    let cache = RECENT_CONNECTIONS_CACHE.read().await;
+    if let Some(connections) = &*cache {
+        return connections.clone();
+    }
+    drop(cache);
+    
+    // Load from file
+    let connections = load_recent_connections().await.unwrap_or_default();
+    
+    // Update cache
+    let mut cache = RECENT_CONNECTIONS_CACHE.write().await;
+    *cache = Some(connections.clone());
+    
+    connections
+}
+
+// Invalidate cache when connections change
+pub async fn invalidate_recent_connections_cache() {
+    let mut cache = RECENT_CONNECTIONS_CACHE.write().await;
+    *cache = None;
+}
+```
+
+---
+
+## 15.17 Further Reading
 
 ### Official Documentation
 - [Tauri Tray Documentation](https://v2.tauri.app/reference/javascript/api/namespaces/tray/)

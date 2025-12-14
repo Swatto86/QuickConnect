@@ -203,34 +203,25 @@ State calculated from other state rather than stored separately.
 **QuickConnect Example:**
 
 ```typescript
-interface Host {
-    hostname: string;
-    description: string;
-    last_connected?: string;
-}
+import {
+    filterHosts as filterHostsUtil,
+    type Host,
+} from "./utils/hosts";
 
 let allHosts: Host[] = [];
-let filteredHosts: Host[] = [];  // Derived from allHosts + search query
 
-// Function to derive filtered state
 function filterHosts(query: string): Host[] {
-    if (!query.trim()) {
-        return allHosts;  // Derived: no filter = all hosts
-    }
-    
-    const lowerQuery = query.toLowerCase();
-    return allHosts.filter(host => 
-        host.hostname.toLowerCase().includes(lowerQuery) ||
-        host.description.toLowerCase().includes(lowerQuery)
-    );
+    return filterHostsUtil(allHosts, query);
 }
 
-// Whenever search query changes, recalculate derived state
-function handleSearch() {
-    const searchInput = document.querySelector("#search-input") as HTMLInputElement;
+async function handleSearch() {
+    const searchInput = document.querySelector(
+        "#search-input",
+    ) as HTMLInputElement;
+    if (!searchInput) return;
+
     const query = searchInput.value;
-    
-    filteredHosts = filterHosts(query);  // Recalculate derived state
+    const filteredHosts = filterHosts(query);
     renderHostsList(filteredHosts, query);
 }
 ```
@@ -594,23 +585,25 @@ When data changes in one window, other windows need to know about it.
 
 **Solution: Emit Events from Backend**
 
-**In Rust (`lib.rs`):**
+**In Rust (`src-tauri/src/commands/hosts.rs`):**
 
 ```rust
 #[tauri::command]
-fn save_host(
-    app_handle: tauri::AppHandle,
-    host: Host,
-) -> Result<(), String> {
-    // Save host to CSV file
-    save_host_to_csv(&host)?;
-    
-    // Notify all windows that hosts have changed
+pub fn save_host(app_handle: tauri::AppHandle, host: Host) -> Result<(), String> {
+    use crate::core::types::Host;
+    use tauri::{Emitter, Manager};
+
+    // Persist host (QuickConnect delegates to core logic)
+    crate::core::hosts::upsert_host(host).map_err(|e| e.to_string())?;
+
+    // Notify windows that the hosts list should be refreshed
     if let Some(main_window) = app_handle.get_webview_window("main") {
-        main_window.emit("hosts-changed", ())
-            .map_err(|e| e.to_string())?;
+        let _ = main_window.emit("hosts-updated", ());
     }
-    
+    if let Some(hosts_window) = app_handle.get_webview_window("hosts") {
+        let _ = hosts_window.emit("hosts-updated", ());
+    }
+
     Ok(())
 }
 ```
@@ -621,7 +614,7 @@ fn save_host(
 import { listen } from '@tauri-apps/api/event';
 
 // Listen for host changes
-await listen('hosts-changed', async () => {
+await listen('hosts-updated', async () => {
     console.log('Hosts list changed, reloading...');
     await loadAllHosts();  // Refresh the list
 });
@@ -631,7 +624,7 @@ await listen('hosts-changed', async () => {
 1. User clicks "Save" in Hosts window
 2. Frontend calls `save_host` command
 3. Backend saves to CSV
-4. Backend emits `hosts-changed` event
+4. Backend emits `hosts-updated` event
 5. Main window receives event
 6. Main window reloads host list
 7. UI updates automatically
@@ -1099,7 +1092,7 @@ let isIntentionalReturn = false;
 
 3. **Data Change** - Reload from backend
    ```typescript
-   await listen('hosts-changed', async () => {
+    await listen('hosts-updated', async () => {
        await loadAllHosts();  // Refresh allHosts
    });
    ```

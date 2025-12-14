@@ -33,7 +33,7 @@ This appendix provides curated resources for continued learning and development 
   - Community highlights
 
 **API Documentation:**
-- **Rust API**: https://docs.rs/tauri/2.0.0/tauri/
+- **Rust API**: https://docs.rs/tauri/latest/tauri/
   - Complete Rust API documentation
   - Module organization
   - Type definitions
@@ -287,7 +287,7 @@ thiserror = "1"
 
 ```bash
 # Tauri CLI
-cargo install tauri-cli
+npm install -g @tauri-apps/cli
 
 # Code formatting
 cargo install rustfmt

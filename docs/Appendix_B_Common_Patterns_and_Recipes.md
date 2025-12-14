@@ -16,6 +16,9 @@ This appendix provides reusable code patterns and recipes for common tasks in Ta
 - [B.8 Custom Protocols](#b8-custom-protocols)
 - [B.9 Progress Indicators](#b9-progress-indicators)
 - [B.10 Auto-Update Implementation](#b10-auto-update-implementation)
+- [B.11 Clipboard Operations](#b11-clipboard-operations)
+- [B.12 Keyboard Shortcuts](#b12-keyboard-shortcuts)
+- [B.13 QuickConnect Command and Event Catalog](#b13-quickconnect-command-and-event-catalog)
 
 ---
 
@@ -1045,6 +1048,65 @@ document.addEventListener('keydown', async (e) => {
     }
 });
 ```
+
+---
+
+## B.13 QuickConnect Command and Event Catalog
+
+This section is a **coverage matrix** for the QuickConnect implementation.
+
+Important notes:
+- If a command takes `tauri::AppHandle`, it is **injected by Tauri** automatically when invoked from TypeScript. You do not pass it from `invoke()`.
+- Some commands show `Frontend uses` as `—` because they are triggered from Rust-only entry points (system tray, global hotkeys, internal orchestration) rather than direct TypeScript calls.
+
+### Registered Commands (authoritative)
+
+| Command | Rust signature (as implemented) | Source | Frontend uses |
+|---|---|---|---|
+| `check_autostart` | `pub fn check_autostart() -> Result<bool, String>` | src-tauri/src/commands/system.rs | — |
+| `check_host_status` | `pub async fn check_host_status(hostname: String) -> Result<String, String>` | src-tauri/src/commands/hosts.rs | — |
+| `close_login_and_prepare_main` | `pub async fn close_login_and_prepare_main(app_handle: tauri::AppHandle) -> Result<(), String>` | src-tauri/src/commands/windows.rs | src/main.ts |
+| `close_login_window` | `pub async fn close_login_window(app_handle: tauri::AppHandle) -> Result<(), String>` | src-tauri/src/commands/windows.rs | — |
+| `delete_all_hosts` | `pub async fn delete_all_hosts(app_handle: tauri::AppHandle) -> Result<(), String>` | src-tauri/src/commands/hosts.rs | src/__tests__/ui-hosts.test.ts, src/hosts.ts |
+| `delete_credentials` | `pub async fn delete_credentials() -> Result<(), String>` | src-tauri/src/commands/credentials.rs | src/__tests__/integration.test.ts, src/__tests__/ui-login.test.ts, src/main.ts |
+| `delete_host` | `pub fn delete_host(app_handle: tauri::AppHandle, hostname: String) -> Result<(), String>` | src-tauri/src/commands/hosts.rs | src/__tests__/integration.test.ts, src/__tests__/ui-hosts.test.ts, src/hosts.ts |
+| `delete_host_credentials` | `pub async fn delete_host_credentials(hostname: String) -> Result<(), String>` | src-tauri/src/commands/credentials.rs | — |
+| `get_all_hosts` | `pub async fn get_all_hosts() -> Result<Vec<Host>, String>` | src-tauri/src/commands/hosts.rs | src/__tests__/integration.test.ts |
+| `get_host_credentials` | `pub async fn get_host_credentials(hostname: String) -> Result<Option<StoredCredentials>, String>` | src-tauri/src/commands/credentials.rs | — |
+| `get_hosts` | `pub fn get_hosts() -> Result<Vec<Host>, String>` | src-tauri/src/commands/hosts.rs | — |
+| `get_login_window` | `pub async fn get_login_window(app_handle: tauri::AppHandle) -> Result<(), String>` | src-tauri/src/commands/windows.rs | — |
+| `get_recent_connections` | `pub fn get_recent_connections() -> Result<Vec<RecentConnection>, String>` | src-tauri/src/commands/system.rs | — |
+| `get_stored_credentials` | `pub async fn get_stored_credentials() -> Result<Option<StoredCredentials>, String>` | src-tauri/src/commands/credentials.rs | src/__tests__/integration.test.ts, src/__tests__/ui-login.test.ts |
+| `get_theme` | `pub fn get_theme(app_handle: tauri::AppHandle) -> Result<String, String>` | src-tauri/src/commands/theme.rs | src/__tests__/integration.test.ts |
+| `get_windows_theme` | `pub fn get_windows_theme() -> Result<String, String>` | src-tauri/src/commands/theme.rs | — |
+| `hide_hosts_window` | `pub async fn hide_hosts_window(app_handle: tauri::AppHandle) -> Result<(), String>` | src-tauri/src/commands/windows.rs | src/__tests__/ui-hosts.test.ts, src/hosts.ts |
+| `hide_main_window` | `pub async fn hide_main_window(app_handle: tauri::AppHandle) -> Result<(), String>` | src-tauri/src/commands/windows.rs | src/__tests__/ui-main.test.ts, src/main.ts |
+| `launch_rdp` | `pub async fn launch_rdp(app_handle: tauri::AppHandle, host: Host) -> Result<(), String>` | src-tauri/src/commands/system.rs | src/__tests__/integration.test.ts, src/__tests__/ui-main.test.ts, src/main.ts |
+| `list_hosts_with_credentials` | `pub async fn list_hosts_with_credentials() -> Result<Vec<String>, String>` | src-tauri/src/commands/credentials.rs | — |
+| `quit_app` | `pub async fn quit_app(app_handle: tauri::AppHandle)` | src-tauri/src/commands/windows.rs | src/__tests__/ui-login.test.ts, src/about.ts, src/hosts.ts, src/main.ts |
+| `reset_application` | `pub async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, String>` | src-tauri/src/commands/system.rs | — |
+| `save_credentials` | `pub async fn save_credentials(credentials: Credentials) -> Result<(), String>` | src-tauri/src/commands/credentials.rs | src/__tests__/integration.test.ts, src/__tests__/ui-login.test.ts, src/main.ts |
+| `save_host` | `pub fn save_host(app_handle: tauri::AppHandle, host: Host) -> Result<(), String>` | src-tauri/src/commands/hosts.rs | src/__tests__/integration.test.ts, src/__tests__/ui-hosts.test.ts, src/hosts.ts |
+| `save_host_credentials` | `pub async fn save_host_credentials(host: crate::Host, credentials: Credentials,) -> Result<(), String>` | src-tauri/src/commands/credentials.rs | src/__tests__/ui-hosts.test.ts, src/hosts.ts |
+| `scan_domain` | `pub async fn scan_domain(app_handle: tauri::AppHandle, domain: String, server: String,) -> Result<String, String>` | src-tauri/src/commands/system.rs | — |
+| `search_hosts` | `pub async fn search_hosts(query: String) -> Result<Vec<Host>, String>` | src-tauri/src/commands/hosts.rs | — |
+| `set_theme` | `pub fn set_theme(app_handle: tauri::AppHandle, theme: String) -> Result<(), String>` | src-tauri/src/commands/theme.rs | — |
+| `show_about` | `pub fn show_about(app_handle: tauri::AppHandle) -> Result<(), String>` | src-tauri/src/commands/windows.rs | — |
+| `show_error` | `pub fn show_error(app_handle: tauri::AppHandle, message: String, category: Option<String>, details: Option<String>,) -> Result<(), String>` | src-tauri/src/commands/windows.rs | src/hosts.ts, src/main.ts |
+| `show_hosts_window` | `pub async fn show_hosts_window(app_handle: tauri::AppHandle) -> Result<(), String>` | src-tauri/src/commands/windows.rs | src/__tests__/ui-main.test.ts, src/main.ts |
+| `show_login_window` | `pub async fn show_login_window(app_handle: tauri::AppHandle) -> Result<(), String>` | src-tauri/src/commands/windows.rs | src/__tests__/ui-main.test.ts, src/main.ts |
+| `switch_to_main_window` | `pub async fn switch_to_main_window(app_handle: tauri::AppHandle) -> Result<(), tauri::Error>` | src-tauri/src/commands/windows.rs | src/__tests__/ui-login.test.ts, src/main.ts |
+| `toggle_autostart` | `pub fn toggle_autostart() -> Result<bool, String>` | src-tauri/src/commands/system.rs | — |
+| `toggle_error_window` | `pub async fn toggle_error_window(app_handle: tauri::AppHandle) -> Result<(), String>` | src-tauri/src/commands/windows.rs | — |
+| `toggle_visible_window` | `pub async fn toggle_visible_window(app_handle: tauri::AppHandle) -> Result<(), tauri::Error>` | src-tauri/src/commands/windows.rs | — |
+
+### QuickConnect Events (emitted by the backend)
+
+These are the events the real app uses for cross-window coordination:
+- `hosts-updated`: emitted after host mutations and after `scan_domain` completes
+- `host-connected`: emitted after successful `launch_rdp` (payload is hostname string)
+- `theme-changed`: emitted after `set_theme` (payload is theme string)
+- `show-error`: emitted by `show_error` to drive the error window
 
 ---
 

@@ -669,9 +669,26 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
       }
 
+      const confirmedAgain = confirm(
+        "FINAL CONFIRMATION:\n\n" +
+          "This will COMPLETELY reset QuickConnect and permanently delete your data.\n\n" +
+          "Press OK to proceed with the reset, or Cancel to abort.",
+      );
+
+      if (!confirmedAgain) {
+        return;
+      }
+
       try {
         const result = await invoke<string>("reset_application");
         alert(result);
+
+        // Return to the initial credentials screen
+        try {
+          await invoke("show_login_window");
+        } catch {
+          // Non-critical: window switching may fail if windows are missing
+        }
 
         // Recommend restarting the application
         const shouldQuit = confirm(

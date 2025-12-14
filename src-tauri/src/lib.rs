@@ -725,14 +725,14 @@ mod tests {
             let mut recent = RecentConnections::new();
             let before = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .expect("SystemTime should be after UNIX_EPOCH")
                 .as_secs();
 
             recent.add_connection("server.domain.com".to_string(), "Test".to_string());
 
             let after = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .expect("SystemTime should be after UNIX_EPOCH")
                 .as_secs();
 
             assert!(recent.connections[0].timestamp >= before);
@@ -779,7 +779,7 @@ mod tests {
                 last_connected: Some("15/01/2024 10:30:00".to_string()),
             };
 
-            let json = serde_json::to_string(&host).unwrap();
+            let json = serde_json::to_string(&host).expect("Host serialization should succeed");
             assert!(json.contains("server.domain.com"));
             assert!(json.contains("Test Server"));
             assert!(json.contains("15/01/2024 10:30:00"));
@@ -793,7 +793,7 @@ mod tests {
                 "last_connected": "15/01/2024 10:30:00"
             }"#;
 
-            let host: Host = serde_json::from_str(json).unwrap();
+            let host: Host = serde_json::from_str(json).expect("Host deserialization should succeed");
             assert_eq!(host.hostname, "server.domain.com");
             assert_eq!(host.description, "Test Server");
             assert_eq!(host.last_connected, Some("15/01/2024 10:30:00".to_string()));
@@ -806,7 +806,7 @@ mod tests {
                 "description": "Test Server"
             }"#;
 
-            let host: Host = serde_json::from_str(json).unwrap();
+            let host: Host = serde_json::from_str(json).expect("Host deserialization should succeed");
             assert_eq!(host.hostname, "server.domain.com");
             assert!(host.last_connected.is_none());
         }
@@ -840,7 +840,7 @@ mod tests {
                 timestamp: 1705312200,
             };
 
-            let json = serde_json::to_string(&conn).unwrap();
+            let json = serde_json::to_string(&conn).expect("RecentConnection serialization should succeed");
             assert!(json.contains("server.domain.com"));
             assert!(json.contains("1705312200"));
         }
@@ -853,7 +853,7 @@ mod tests {
                 "timestamp": 1705312200
             }"#;
 
-            let conn: RecentConnection = serde_json::from_str(json).unwrap();
+            let conn: RecentConnection = serde_json::from_str(json).expect("RecentConnection deserialization should succeed");
             assert_eq!(conn.hostname, "server.domain.com");
             assert_eq!(conn.timestamp, 1705312200);
         }
@@ -864,8 +864,8 @@ mod tests {
             recent.add_connection("server01.domain.com".to_string(), "First".to_string());
             recent.add_connection("server02.domain.com".to_string(), "Second".to_string());
 
-            let json = serde_json::to_string_pretty(&recent).unwrap();
-            let loaded: RecentConnections = serde_json::from_str(&json).unwrap();
+            let json = serde_json::to_string_pretty(&recent).expect("RecentConnections serialization should succeed");
+            let loaded: RecentConnections = serde_json::from_str(&json).expect("RecentConnections deserialization should succeed");
 
             assert_eq!(loaded.connections.len(), 2);
             assert_eq!(loaded.connections[0].hostname, "server02.domain.com");
@@ -887,7 +887,7 @@ mod tests {
                 "password": "secret123"
             }"#;
 
-            let creds: Credentials = serde_json::from_str(json).unwrap();
+            let creds: Credentials = serde_json::from_str(json).expect("Credentials deserialization should succeed");
             assert_eq!(creds.username, "admin");
             assert_eq!(creds.password, "secret123");
         }
@@ -899,7 +899,7 @@ mod tests {
                 "password": "secret123"
             }"#;
 
-            let creds: Credentials = serde_json::from_str(json).unwrap();
+            let creds: Credentials = serde_json::from_str(json).expect("Credentials deserialization should succeed");
             assert_eq!(creds.username, "DOMAIN\\admin");
         }
 
@@ -910,7 +910,7 @@ mod tests {
                 "password": "secret123"
             }"#;
 
-            let creds: Credentials = serde_json::from_str(json).unwrap();
+            let creds: Credentials = serde_json::from_str(json).expect("Credentials deserialization should succeed");
             assert_eq!(creds.username, "admin@domain.com");
         }
 
@@ -921,7 +921,7 @@ mod tests {
                 password: "secret".to_string(),
             };
 
-            let json = serde_json::to_string(&creds).unwrap();
+            let json = serde_json::to_string(&creds).expect("StoredCredentials serialization should succeed");
             assert!(json.contains("admin"));
             assert!(json.contains("secret"));
         }
@@ -943,7 +943,7 @@ mod tests {
                 details: Some("Timeout after 30 seconds".to_string()),
             };
 
-            let json = serde_json::to_string(&payload).unwrap();
+            let json = serde_json::to_string(&payload).expect("ErrorPayload serialization should succeed");
             assert!(json.contains("Connection failed"));
             assert!(json.contains("RDP_LAUNCH"));
             assert!(json.contains("Timeout"));
@@ -958,7 +958,7 @@ mod tests {
                 details: None,
             };
 
-            let json = serde_json::to_string(&payload).unwrap();
+            let json = serde_json::to_string(&payload).expect("ErrorPayload serialization should succeed");
             assert!(json.contains("Error occurred"));
             assert!(json.contains("null") || !json.contains("category\":"));
         }
@@ -1016,9 +1016,9 @@ mod tests {
 
         /// Helper to create a temp directory with a hosts.csv file
         fn create_temp_hosts_csv(content: &str) -> (TempDir, PathBuf) {
-            let temp_dir = TempDir::new().unwrap();
+            let temp_dir = TempDir::new().expect("Failed to create temp directory");
             let csv_path = temp_dir.path().join("hosts.csv");
-            fs::write(&csv_path, content).unwrap();
+            fs::write(&csv_path, content).expect("Failed to write CSV file");
             (temp_dir, csv_path)
         }
 
@@ -1030,14 +1030,14 @@ mod tests {
 
             let (_temp_dir, csv_path) = create_temp_hosts_csv(content);
 
-            let csv_content = fs::read_to_string(&csv_path).unwrap();
+            let csv_content = fs::read_to_string(&csv_path).expect("Failed to read CSV file");
             let mut reader = csv::ReaderBuilder::new()
                 .has_headers(true)
                 .from_reader(csv_content.as_bytes());
 
             let mut hosts = Vec::new();
             for result in reader.records() {
-                let record = result.unwrap();
+                let record = result.expect("Failed to parse CSV record");
                 if record.len() >= 2 {
                     let last_connected = if record.len() >= 3 && !record[2].is_empty() {
                         Some(record[2].to_string())
@@ -1070,7 +1070,7 @@ mod tests {
 
             let (_temp_dir, csv_path) = create_temp_hosts_csv(content);
 
-            let csv_content = fs::read_to_string(&csv_path).unwrap();
+            let csv_content = fs::read_to_string(&csv_path).expect("Failed to read CSV file");
             let mut reader = csv::ReaderBuilder::new()
                 .has_headers(true)
                 .from_reader(csv_content.as_bytes());
@@ -1097,7 +1097,7 @@ mod tests {
 
             let (_temp_dir, csv_path) = create_temp_hosts_csv(content);
 
-            let csv_content = fs::read_to_string(&csv_path).unwrap();
+            let csv_content = fs::read_to_string(&csv_path).expect("Failed to read CSV file");
             let mut reader = csv::ReaderBuilder::new()
                 .has_headers(true)
                 .from_reader(csv_content.as_bytes());
@@ -1597,9 +1597,9 @@ mod tests {
             }
 
             for handle in handles {
-                let result = rt.block_on(handle).unwrap();
+                let result = rt.block_on(handle).expect("Task should complete without panic");
                 assert!(result.is_ok());
-                let status = result.unwrap();
+                let status = result.expect("check_host_status should return Ok");
                 assert!(status == "online" || status == "offline" || status == "unknown");
             }
         }
@@ -1607,10 +1607,10 @@ mod tests {
         #[test]
         fn test_check_host_status_ipv6_localhost() {
             // Test with IPv6 localhost
-            let rt = Runtime::new().unwrap();
+            let rt = Runtime::new().expect("Failed to create tokio runtime");
             let result = rt.block_on(commands::check_host_status("::1".to_string()));
             assert!(result.is_ok());
-            let status = result.unwrap();
+            let status = result.expect("check_host_status should return Ok");
             // Status depends on whether RDP is running on IPv6
             assert!(status == "online" || status == "offline" || status == "unknown");
         }
@@ -1618,7 +1618,7 @@ mod tests {
         #[test]
         fn test_check_host_status_returns_result_not_error() {
             // Verify function returns Result, not panic
-            let rt = Runtime::new().unwrap();
+            let rt = Runtime::new().expect("Failed to create tokio runtime");
             let result = rt.block_on(commands::check_host_status("invalid".to_string()));
             // Should always return Ok, never Err
             assert!(result.is_ok());
@@ -1633,7 +1633,7 @@ mod tests {
         #[test]
         fn test_csv_parsing_truncated_lines() {
             // Test handling of truncated CSV lines (incomplete records)
-            let test_cases = vec![
+            let test_cases = [
                 "hostname,description,last_connected\ntest.example.com",  // Missing columns
                 "hostname,description\ntest.example.com,Description",     // No last_connected column
                 "hostname,description,last_connected\ntest.example.com,", // Empty description at end
@@ -1676,7 +1676,7 @@ mod tests {
         #[test]
         fn test_csv_parsing_missing_quotes() {
             // Test CSV records with unmatched quotes
-            let test_cases = vec![
+            let test_cases = [
                 r#"hostname,description,last_connected
 "test.example.com,Missing closing quote,2024-01-01"#,
                 r#"hostname,description,last_connected
@@ -1715,7 +1715,7 @@ test.example.com,"Missing closing quote,2024-01-01"#,
         #[test]
         fn test_csv_parsing_special_characters() {
             // Test CSV with special characters: newlines, tabs, unicode
-            let test_cases = vec![
+            let test_cases = [
                 "hostname,description,last_connected\ntest.example.com,\"Line1\nLine2\",2024-01-01",
                 "hostname,description,last_connected\ntest.example.com,Tab\tSeparated,2024-01-01",
                 "hostname,description,last_connected\ntest.example.com,Unicode→✓→émojis🎉,2024-01-01",
@@ -1734,7 +1734,7 @@ test.example.com,"Missing closing quote,2024-01-01"#,
                         // Should successfully parse special characters
                         assert!(!records.is_empty(), "Test case {}: No records parsed", i);
                         for record in records {
-                            assert!(record.len() >= 1, "Test case {}: Record too short", i);
+                            assert!(!record.is_empty(), "Test case {}: Record too short", i);
                         }
                     }
                     Err(e) => {
@@ -1762,7 +1762,7 @@ test.example.com,"Missing closing quote,2024-01-01"#,
             let mut count = 0;
             for result in reader.records() {
                 assert!(result.is_ok(), "Should handle long fields without crashing");
-                let record = result.unwrap();
+                let record = result.expect("CSV record parsing should succeed");
                 assert_eq!(record.len(), 3, "Should have 3 fields");
                 assert_eq!(record[0].len(), 10_000, "Hostname should be 10K chars");
                 assert_eq!(record[1].len(), 20_000, "Description should be 20K chars");
@@ -1845,7 +1845,7 @@ test.example.com,"Missing closing quote,2024-01-01"#,
             match records {
                 Ok(recs) => {
                     // Should handle most mixed line endings
-                    assert!(recs.len() >= 1, "Should parse at least 1 record");
+                    assert!(!recs.is_empty(), "Should parse at least 1 record");
                 }
                 Err(_e) => {
                     // Some line ending combinations may fail - acceptable
@@ -1856,7 +1856,7 @@ test.example.com,"Missing closing quote,2024-01-01"#,
         #[test]
         fn test_json_parsing_recent_connections_malformed() {
             // Test JSON parsing with malformed structures
-            let test_cases = vec![
+            let test_cases = [
                 r#"{"connections":["not_an_object"]}"#, // Array contains string instead of object
                 r#"{"connections":[{"hostname":"test.example.com","description":"Test"}]}"#, // Missing timestamp field
                 r#"{"connections":[{"hostname":"test.example.com","description":"","timestamp":1234567890}]}"#, // Empty description
@@ -1891,7 +1891,7 @@ test.example.com,"Missing closing quote,2024-01-01"#,
         #[test]
         fn test_json_parsing_truncated() {
             // Test truncated JSON (simulating incomplete file writes)
-            let test_cases = vec![
+            let test_cases = [
                 r#"{"connections":[{"hostname":"test.example.com","description":"Test"#, // Missing closing braces
                 r#"{"connections":[{"hostname":"test.example.com""#,                    // Truncated mid-field
                 r#"{"connections":[{"hostname":"test.example.com","description":"Test","timestamp":1234567890}]"#, // Missing final brace
@@ -1905,7 +1905,7 @@ test.example.com,"Missing closing quote,2024-01-01"#,
                     "Test case {}: Truncated JSON should error",
                     i
                 );
-                let err = result.unwrap_err();
+                let err = result.expect_err("Expected truncated JSON to produce error");
                 assert!(
                     err.to_string().contains("EOF")
                         || err.to_string().contains("expected")
@@ -1921,7 +1921,7 @@ test.example.com,"Missing closing quote,2024-01-01"#,
         #[test]
         fn test_json_parsing_invalid_utf8_sequences() {
             // Note: Rust strings are always valid UTF-8, so we test Unicode edge cases instead
-            let test_cases = vec![
+            let test_cases = [
                 r#"{"connections":[{"hostname":"test\u0000.example.com","description":"Null char","timestamp":1234567890}]}"#,
                 r#"{"connections":[{"hostname":"test\uD800.example.com","description":"Unpaired surrogate","timestamp":1234567890}]}"#,
                 r#"{"connections":[{"hostname":"test😀.example.com","description":"Emoji","timestamp":1234567890}]}"#,
@@ -1996,7 +1996,7 @@ test.example.com,"Missing closing quote,2024-01-01"#,
             // Test JSON parser limits with nested structures
             let deeply_nested = r#"{"connections":[{"hostname":"test.example.com","description":"Test","nested":{"level1":{"level2":{"level3":"value"}}}}]}"#;
 
-            let result = serde_json::from_str::<serde_json::Value>(&deeply_nested);
+            let result = serde_json::from_str::<serde_json::Value>(deeply_nested);
             assert!(result.is_ok(), "Should handle nested structures");
         }
 

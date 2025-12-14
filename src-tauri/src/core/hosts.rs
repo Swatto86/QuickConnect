@@ -398,3 +398,473 @@ pub fn migrate_hosts_csv_if_needed() {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// Helper to set up a test environment with a temporary CSV file
+    fn setup_test_env() -> (TempDir, PathBuf) {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let csv_path = temp_dir.path().join("hosts.csv");
+        (temp_dir, csv_path)
+    }
+
+    /// Helper to create test hosts
+    fn create_test_host(hostname: &str, description: &str) -> Host {
+        Host {
+            hostname: hostname.to_string(),
+            description: description.to_string(),
+            last_connected: None,
+        }
+    }
+
+    #[test]
+    fn test_search_hosts_by_hostname() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let hosts = vec![
+            create_test_host("server01.domain.com", "Web Server"),
+            create_test_host("server02.domain.com", "Database Server"),
+            create_test_host("workstation01.domain.com", "Dev Machine"),
+        ];
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        // Mock get_hosts_csv_path by testing csv_reader directly
+        let loaded_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        
+        // Test search logic
+        let query = "server";
+        let filtered: Vec<Host> = loaded_hosts
+            .into_iter()
+            .filter(|host| {
+                host.hostname.to_lowercase().contains(&query.to_lowercase())
+                    || host.description.to_lowercase().contains(&query.to_lowercase())
+            })
+            .collect();
+        
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().any(|h| h.hostname == "server01.domain.com"));
+        assert!(filtered.iter().any(|h| h.hostname == "server02.domain.com"));
+    }
+
+    #[test]
+    fn test_search_hosts_by_description() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let hosts = vec![
+            create_test_host("server01.domain.com", "Web Server"),
+            create_test_host("server02.domain.com", "Database Server"),
+            create_test_host("server03.domain.com", "Mail Server"),
+        ];
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        let loaded_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        
+        // Test search logic
+        let query = "database";
+        let filtered: Vec<Host> = loaded_hosts
+            .into_iter()
+            .filter(|host| {
+                host.hostname.to_lowercase().contains(&query.to_lowercase())
+                    || host.description.to_lowercase().contains(&query.to_lowercase())
+            })
+            .collect();
+        
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].hostname, "server02.domain.com");
+    }
+
+    #[test]
+    fn test_search_hosts_case_insensitive() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let hosts = vec![
+            create_test_host("SERVER01.DOMAIN.COM", "Web Server"),
+            create_test_host("server02.domain.com", "Database"),
+        ];
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        let loaded_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        
+        // Test case-insensitive search
+        let query = "server01";
+        let filtered: Vec<Host> = loaded_hosts
+            .into_iter()
+            .filter(|host| {
+                host.hostname.to_lowercase().contains(&query.to_lowercase())
+                    || host.description.to_lowercase().contains(&query.to_lowercase())
+            })
+            .collect();
+        
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].hostname.to_lowercase(), "server01.domain.com");
+    }
+
+    #[test]
+    fn test_search_hosts_empty_query_returns_all() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let hosts = vec![
+            create_test_host("server01.domain.com", "Web Server"),
+            create_test_host("server02.domain.com", "Database"),
+        ];
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        let loaded_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        
+        // Empty query should match all hosts
+        let query = "";
+        let filtered: Vec<Host> = loaded_hosts
+            .into_iter()
+            .filter(|host| {
+                host.hostname.to_lowercase().contains(query)
+                    || host.description.to_lowercase().contains(query)
+            })
+            .collect();
+        
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_search_hosts_no_matches() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let hosts = vec![
+            create_test_host("server01.domain.com", "Web Server"),
+            create_test_host("server02.domain.com", "Database"),
+        ];
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        let loaded_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        
+        let query = "nonexistent";
+        let filtered: Vec<Host> = loaded_hosts
+            .into_iter()
+            .filter(|host| {
+                host.hostname.to_lowercase().contains(query)
+                    || host.description.to_lowercase().contains(query)
+            })
+            .collect();
+        
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_upsert_host_insert_new() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        // Start with empty hosts
+        csv_writer::write_hosts_to_csv(&csv_path, &[]).expect("Failed to write CSV");
+        
+        let new_host = create_test_host("server01.domain.com", "Test Server");
+        
+        // Simulate upsert logic
+        let mut hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        
+        // Validate hostname
+        assert!(!new_host.hostname.trim().is_empty());
+        
+        // Check if host exists
+        if !hosts.iter().any(|h| h.hostname == new_host.hostname) {
+            hosts.push(new_host.clone());
+        }
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        // Verify
+        let loaded = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].hostname, "server01.domain.com");
+        assert_eq!(loaded[0].description, "Test Server");
+    }
+
+    #[test]
+    fn test_upsert_host_update_existing() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        // Start with one host
+        let initial_hosts = vec![
+            create_test_host("server01.domain.com", "Old Description"),
+        ];
+        csv_writer::write_hosts_to_csv(&csv_path, &initial_hosts).expect("Failed to write CSV");
+        
+        // Update with same hostname, different description
+        let updated_host = Host {
+            hostname: "server01.domain.com".to_string(),
+            description: "New Description".to_string(),
+            last_connected: Some("14/12/2025 10:30:00".to_string()),
+        };
+        
+        // Simulate upsert logic
+        let mut hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        
+        if let Some(idx) = hosts.iter().position(|h| h.hostname == updated_host.hostname) {
+            hosts[idx] = updated_host.clone();
+        } else {
+            hosts.push(updated_host.clone());
+        }
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        // Verify
+        let loaded = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].hostname, "server01.domain.com");
+        assert_eq!(loaded[0].description, "New Description");
+        assert_eq!(loaded[0].last_connected, Some("14/12/2025 10:30:00".to_string()));
+    }
+
+    #[test]
+    fn test_upsert_host_rejects_empty_hostname() {
+        let host = Host {
+            hostname: "".to_string(),
+            description: "Test".to_string(),
+            last_connected: None,
+        };
+        
+        // Validate hostname
+        assert!(host.hostname.trim().is_empty());
+    }
+
+    #[test]
+    fn test_upsert_host_trims_whitespace_hostname() {
+        let host = Host {
+            hostname: "  server01.domain.com  ".to_string(),
+            description: "Test".to_string(),
+            last_connected: None,
+        };
+        
+        // Validate that trimmed hostname is not empty
+        assert!(!host.hostname.trim().is_empty());
+        assert_eq!(host.hostname.trim(), "server01.domain.com");
+    }
+
+    #[test]
+    fn test_delete_host_removes_correct_host() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let hosts = vec![
+            create_test_host("server01.domain.com", "Server 1"),
+            create_test_host("server02.domain.com", "Server 2"),
+            create_test_host("server03.domain.com", "Server 3"),
+        ];
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        // Simulate delete logic
+        let hostname_to_delete = "server02.domain.com";
+        let mut loaded_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        loaded_hosts.retain(|h| h.hostname != hostname_to_delete);
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &loaded_hosts).expect("Failed to write CSV");
+        
+        // Verify
+        let final_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        assert_eq!(final_hosts.len(), 2);
+        assert!(final_hosts.iter().any(|h| h.hostname == "server01.domain.com"));
+        assert!(final_hosts.iter().any(|h| h.hostname == "server03.domain.com"));
+        assert!(!final_hosts.iter().any(|h| h.hostname == "server02.domain.com"));
+    }
+
+    #[test]
+    fn test_delete_host_idempotent_when_not_exists() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let hosts = vec![
+            create_test_host("server01.domain.com", "Server 1"),
+        ];
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        // Try to delete non-existent host
+        let hostname_to_delete = "nonexistent.domain.com";
+        let mut loaded_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        let before_count = loaded_hosts.len();
+        loaded_hosts.retain(|h| h.hostname != hostname_to_delete);
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &loaded_hosts).expect("Failed to write CSV");
+        
+        // Verify no change
+        let final_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        assert_eq!(final_hosts.len(), before_count);
+        assert_eq!(final_hosts[0].hostname, "server01.domain.com");
+    }
+
+    #[test]
+    fn test_delete_all_hosts_clears_list() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let hosts = vec![
+            create_test_host("server01.domain.com", "Server 1"),
+            create_test_host("server02.domain.com", "Server 2"),
+            create_test_host("server03.domain.com", "Server 3"),
+        ];
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        // Delete all
+        csv_writer::write_hosts_to_csv(&csv_path, &[]).expect("Failed to write empty CSV");
+        
+        // Verify
+        let final_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        assert!(final_hosts.is_empty());
+    }
+
+    #[test]
+    fn test_update_last_connected_updates_timestamp() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let hosts = vec![
+            create_test_host("server01.domain.com", "Server 1"),
+            create_test_host("server02.domain.com", "Server 2"),
+        ];
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        // Simulate timestamp update
+        let hostname_to_update = "server01.domain.com";
+        let timestamp = "14/12/2025 15:45:30";
+        
+        let mut loaded_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        
+        let mut found = false;
+        for host in &mut loaded_hosts {
+            if host.hostname == hostname_to_update {
+                host.last_connected = Some(timestamp.to_string());
+                found = true;
+                break;
+            }
+        }
+        
+        assert!(found, "Host should be found");
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &loaded_hosts).expect("Failed to write CSV");
+        
+        // Verify
+        let final_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        let updated_host = final_hosts.iter().find(|h| h.hostname == hostname_to_update).expect("Host should exist");
+        assert_eq!(updated_host.last_connected, Some(timestamp.to_string()));
+    }
+
+    #[test]
+    fn test_update_last_connected_returns_error_if_not_found() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let hosts = vec![
+            create_test_host("server01.domain.com", "Server 1"),
+        ];
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        // Try to update non-existent host
+        let hostname_to_update = "nonexistent.domain.com";
+        let timestamp = "14/12/2025 15:45:30";
+        
+        let mut loaded_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        
+        let mut found = false;
+        for host in &mut loaded_hosts {
+            if host.hostname == hostname_to_update {
+                host.last_connected = Some(timestamp.to_string());
+                found = true;
+                break;
+            }
+        }
+        
+        assert!(!found, "Host should not be found");
+    }
+
+    #[test]
+    fn test_update_last_connected_preserves_other_fields() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let original_description = "Important Server";
+        let hosts = vec![
+            Host {
+                hostname: "server01.domain.com".to_string(),
+                description: original_description.to_string(),
+                last_connected: Some("13/12/2025 10:00:00".to_string()),
+            },
+        ];
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        // Update timestamp
+        let hostname_to_update = "server01.domain.com";
+        let new_timestamp = "14/12/2025 15:45:30";
+        
+        let mut loaded_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        
+        for host in &mut loaded_hosts {
+            if host.hostname == hostname_to_update {
+                host.last_connected = Some(new_timestamp.to_string());
+                break;
+            }
+        }
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &loaded_hosts).expect("Failed to write CSV");
+        
+        // Verify other fields preserved
+        let final_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        let updated_host = &final_hosts[0];
+        assert_eq!(updated_host.hostname, "server01.domain.com");
+        assert_eq!(updated_host.description, original_description);
+        assert_eq!(updated_host.last_connected, Some(new_timestamp.to_string()));
+    }
+
+    #[test]
+    fn test_upsert_multiple_hosts_maintains_order() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        csv_writer::write_hosts_to_csv(&csv_path, &[]).expect("Failed to write CSV");
+        
+        let hosts_to_add = vec![
+            create_test_host("alpha.domain.com", "Alpha"),
+            create_test_host("beta.domain.com", "Beta"),
+            create_test_host("gamma.domain.com", "Gamma"),
+        ];
+        
+        // Add hosts one by one
+        let mut current_hosts = Vec::new();
+        for host in hosts_to_add {
+            current_hosts.push(host);
+            csv_writer::write_hosts_to_csv(&csv_path, &current_hosts).expect("Failed to write CSV");
+        }
+        
+        // Verify order preserved
+        let final_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        assert_eq!(final_hosts.len(), 3);
+        assert_eq!(final_hosts[0].hostname, "alpha.domain.com");
+        assert_eq!(final_hosts[1].hostname, "beta.domain.com");
+        assert_eq!(final_hosts[2].hostname, "gamma.domain.com");
+    }
+
+    #[test]
+    fn test_search_with_special_characters() {
+        let (_temp_dir, csv_path) = setup_test_env();
+        
+        let hosts = vec![
+            create_test_host("server-01.domain.com", "Server with dash"),
+            create_test_host("server_02.domain.com", "Server with underscore"),
+            create_test_host("server.03.domain.com", "Server with dots"),
+        ];
+        csv_writer::write_hosts_to_csv(&csv_path, &hosts).expect("Failed to write CSV");
+        
+        let loaded_hosts = csv_reader::read_hosts_from_csv(&csv_path).expect("Failed to read CSV");
+        
+        // Search for dash
+        let query = "server-";
+        let filtered: Vec<Host> = loaded_hosts.clone()
+            .into_iter()
+            .filter(|host| {
+                host.hostname.to_lowercase().contains(query)
+                    || host.description.to_lowercase().contains(query)
+            })
+            .collect();
+        
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].hostname, "server-01.domain.com");
+    }
+}

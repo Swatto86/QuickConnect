@@ -1653,15 +1653,20 @@ document.addEventListener("keydown", (e) => {
 
 ## Next Steps
 
-In **Chapter 5: TypeScript and Frontend Basics**, we'll dive deeper into:
-- TypeScript best practices for Tauri
-- Advanced type definitions
-- State management patterns
-- Reactive UI updates
-- Component architecture
-- Testing frontend code
-
 **You've now built your first complete Tauri application!** 🎉
+
+### Where to go from here:
+
+👉 **Recommended Next:** [Chapter 4.5: From TaskMaster to QuickConnect - Your Roadmap](Chapter_04_5_From_TaskMaster_to_QuickConnect.md)
+- Get a complete 12-week roadmap for building QuickConnect
+- Understand the architectural differences between simple and production apps
+- Learn the 6-phase development progression
+- See when to apply TaskMaster patterns vs QuickConnect patterns
+
+**Or jump to:**
+- [Chapter 5: TypeScript and Frontend Basics](Chapter_05_TypeScript_and_Frontend_Basics.md) - TypeScript best practices, state management, testing
+- [Chapter 7: Multi-Window Applications](Chapter_07_Multi_Window_Applications.md) - Build apps with multiple windows
+- [Appendix A: Complete QuickConnect Walkthrough](Appendix_A_Complete_QuickConnect_Walkthrough.md) - See the full production implementation
 
 The skills learned here directly transfer to building applications like QuickConnect. You understand the complete workflow from backend commands to frontend UI.
 

@@ -25,6 +25,12 @@
    - Create a complete Tauri application from scratch
    - Build and run your first desktop app
 
+4.5. [**Chapter 4.5: From TaskMaster to QuickConnect - Your Roadmap**](Chapter_04_5_From_TaskMaster_to_QuickConnect.md)
+   - Bridge the gap between simple and production apps
+   - Get a step-by-step roadmap for building QuickConnect
+   - Understand architectural differences and when to use what
+   - Learn the 6-phase development progression
+
 ### Part II: Frontend Development
 
 5. [**Chapter 5: TypeScript and Frontend Basics**](Chapter_05_TypeScript_and_Frontend_Basics.md)

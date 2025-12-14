@@ -831,13 +831,13 @@ pub async fn delete_all_hosts(app_handle: tauri::AppHandle) -> Result<(), String
 
 ```typescript
 async function deleteAllHosts() {
-  // Confirmation dialog
+  // Confirmation dialog using custom dialog
   const count = hosts.length;
-  const confirmed = confirm(
-    `Delete all ${count} host(s)?\n\n` +
-    'This will permanently remove all hosts from your database.\n' +
-    'Recent connections and credentials will not be affected.'
-  );
+  const confirmed = await showCustomDialog({
+    title: 'Delete All Hosts?',
+    message: `Delete all ${count} host(s)?\n\nThis will permanently remove all hosts from your database.\nRecent connections and credentials will not be affected.`,
+    type: 'warning'
+  });
   
   if (!confirmed) return;
   
@@ -887,13 +887,19 @@ async function deleteSelectedHosts() {
   const selectedHosts = selectableHosts.filter(h => h.selected);
   
   if (selectedHosts.length === 0) {
-    alert('No hosts selected');
+    await showCustomDialog({
+      title: 'No Selection',
+      message: 'No hosts selected',
+      type: 'info'
+    });
     return;
   }
   
-  const confirmed = confirm(
-    `Delete ${selectedHosts.length} selected host(s)?`
-  );
+  const confirmed = await showCustomDialog({
+    title: 'Confirm Deletion',
+    message: `Delete ${selectedHosts.length} selected host(s)?`,
+    type: 'warning'
+  });
   
   if (!confirmed) return;
   

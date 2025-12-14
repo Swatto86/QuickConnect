@@ -717,7 +717,7 @@ describe('Search Functionality', () => {
 
 ### 20.3.5 QuickConnect Frontend Test Suite
 
-QuickConnect has a comprehensive frontend testing infrastructure with **321 utility tests** across **9 test files** totaling **6,634 lines of test code**. This ensures reliability and maintainability of all frontend functionality.
+QuickConnect has a comprehensive frontend testing infrastructure with **660 tests** across **9 test files**. This ensures reliability and maintainability of all frontend functionality.
 
 #### Test Configuration (`vitest.config.ts`)
 
@@ -1443,7 +1443,7 @@ All files                |   94.23 |    89.47 |   92.85 |   94.23 |
 
 ✅ **Mocked Tauri API**
 - Tests run without Tauri runtime
-- Fast execution (2-3 seconds for 321 tests)
+- Fast execution (2-3 seconds for 660 tests)
 - CI/CD friendly
 
 ✅ **Coverage Enforcement**

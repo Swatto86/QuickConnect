@@ -365,31 +365,39 @@ This shortcut is implemented in **every window** so users can reset from anywher
 
 ```typescript
 // main.ts, about.ts, hosts.ts - Secret reset shortcut
+import { showCustomDialog } from './utils/ui';
+
 window.addEventListener('keydown', async (e) => {
     // Secret reset shortcut: Ctrl+Shift+Alt+R
     if (e.ctrlKey && e.shiftKey && e.altKey && e.key === 'R') {
         e.preventDefault();
         
-        const confirmed = confirm(
-            '⚠️ WARNING: Application Reset ⚠️\n\n' +
-            'This will permanently delete:\n' +
-            '• All saved credentials\n' +
-            '• All RDP connection files\n' +
-            '• All saved hosts\n' +
-            '• Recent connection history\n\n' +
-            'This action CANNOT be undone!\n\n' +
-            'Are you sure you want to continue?'
-        );
+        const confirmed = await showCustomDialog({
+            title: '⚠️ WARNING: Application Reset ⚠️',
+            message: 
+                'This will permanently delete:\n' +
+                '• All saved credentials\n' +
+                '• All RDP connection files\n' +
+                '• All saved hosts\n' +
+                '• Recent connection history\n\n' +
+                'This action CANNOT be undone!\n\n' +
+                'Are you sure you want to continue?',
+            type: 'warning',
+            showCancel: true
+        });
         
         if (!confirmed) {
             return;
         }
 
-        const confirmedAgain = confirm(
-            'FINAL CONFIRMATION:\n\n' +
-            'This will COMPLETELY reset QuickConnect and permanently delete your data.\n\n' +
-            'Press OK to proceed with the reset, or Cancel to abort.'
-        );
+        const confirmedAgain = await showCustomDialog({
+            title: 'FINAL CONFIRMATION',
+            message:
+                'This will COMPLETELY reset QuickConnect and permanently delete your data.\n\n' +
+                'Press OK to proceed with the reset, or Cancel to abort.',
+            type: 'error',
+            showCancel: true
+        });
 
         if (!confirmedAgain) {
             return;
@@ -397,23 +405,34 @@ window.addEventListener('keydown', async (e) => {
         
         try {
             const result = await invoke<string>("reset_application");
-            alert(result);
+            await showCustomDialog({
+                title: 'Success',
+                message: result,
+                type: 'success'
+            });
 
             // Return to the initial credentials screen
             await invoke('show_login_window');
             
             // Recommend restarting the application
-            const shouldQuit = confirm(
-                'Reset complete!\n\n' +
-                'It is recommended to restart the application now.\n\n' +
-                'Do you want to quit the application?'
-            );
+            const shouldQuit = await showCustomDialog({
+                title: 'Reset Complete',
+                message:
+                    'It is recommended to restart the application now.\n\n' +
+                    'Do you want to quit the application?',
+                type: 'info',
+                showCancel: true
+            });
             
             if (shouldQuit) {
                 await invoke("quit_app");
             }
         } catch (err) {
-            alert('Failed to reset application: ' + err);
+            await showCustomDialog({
+                title: 'Error',
+                message: 'Failed to reset application: ' + err,
+                type: 'error'
+            });
             console.error("Reset error:", err);
         }
     }
@@ -433,13 +452,24 @@ if (e.key === 'R') { }
 
 **2. Always Confirm Dangerous Actions**
 ```typescript
-const confirmed = confirm('⚠️ WARNING: This action cannot be undone!');
+import { showCustomDialog } from './utils/ui';
+
+const confirmed = await showCustomDialog({
+    title: 'Warning',
+    message: 'This action cannot be undone!',
+    type: 'warning',
+    showCancel: true
+});
 if (!confirmed) return;
 ```
 
 **3. Provide Clear Feedback**
 ```typescript
-alert('Reset complete!\n\nIt is recommended to restart the application now.');
+await showCustomDialog({
+    title: 'Success',
+    message: 'Reset complete!\n\nIt is recommended to restart the application now.',
+    type: 'success'
+});
 ```
 
 **4. Document in About Screen (Optional)**

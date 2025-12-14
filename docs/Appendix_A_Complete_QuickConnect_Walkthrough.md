@@ -951,7 +951,14 @@ async function saveHost() {
 }
 
 async function deleteHost(hostname: string) {
-    if (!confirm(`Delete host "${hostname}"?`)) {
+    const confirmed = await showCustomDialog({
+        title: 'Delete Host',
+        message: `Delete host "${hostname}"?`,
+        type: 'warning',
+        showCancel: true
+    });
+    
+    if (!confirmed) {
         return;
     }
     

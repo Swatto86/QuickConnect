@@ -498,7 +498,9 @@ document.getElementById("hostForm")?.addEventListener("submit", async (e) => {
     
     // Validate before submitting
     if (!isValidFQDN(hostname)) {
-        alert("Please enter a valid hostname in the format: server.domain.com");
+        // Production: use showCustomDialog (see Chapter 5)
+        console.error("Invalid hostname format");
+        showNotification("Please enter a valid hostname: server.domain.com", 'error');
         return;  // Stop submission
     }
     

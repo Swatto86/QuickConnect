@@ -13,6 +13,24 @@ By the end of this chapter, you will:
 
 ---
 
+## 📖 Key Terms for This Chapter
+
+If you're new to desktop development, here are terms you'll encounter:
+
+**IPC (Inter-Process Communication)**: How two separate programs talk to each other. Think of it like two people texting - they're in different rooms (processes) but can still send messages.
+
+**Serialization**: Converting data into a format that can be sent between programs. Like packing a box for shipping - you can't just teleport your stuff, you need to package it first.
+
+**WebView**: A mini web browser embedded in your app. Like having Chrome's rendering engine, but without the full browser UI.
+
+**Sandboxing**: Restricting what code can do. Like a playground with a fence - kids (code) can play safely inside but can't wander into traffic (dangerous system operations).
+
+**Native Code**: Code compiled directly to machine instructions. Runs fast because it speaks the computer's language directly, not through an interpreter.
+
+**Runtime**: Extra software needed to run your program. Java needs JVM, .NET needs runtime, but native apps (like Rust) don't need one.
+
+---
+
 ## 3.1 What is Tauri?
 
 Tauri is a toolkit for building desktop applications with web technologies. Unlike Electron, which bundles an entire Chromium browser, Tauri uses the operating system's native web view.
@@ -134,6 +152,42 @@ pub async fn get_all_hosts() -> Result<Vec<Host>, String> {
 ## 3.3 The IPC Bridge: How Frontend and Backend Communicate
 
 IPC (Inter-Process Communication) is the magic that connects JavaScript and Rust.
+
+### 📞 Real-World Analogy: The Restaurant
+
+Think of your Tauri app as a restaurant:
+
+```
+┌────────────────────────────────────────────┐
+│          The Restaurant Model              │
+├────────────────────────────────────────────┤
+│                                            │
+│  Dining Room (Frontend)                    │
+│  • Customers see the menu                  │
+│  • Place orders                            │
+│  • Receive food                            │
+│  • Can't go into kitchen                   │
+│                                            │
+│           🚪 (IPC Bridge)                  │
+│                                            │
+│  Kitchen (Backend)                         │
+│  • Chefs prepare food                      │
+│  • Access to all ingredients (OS APIs)     │
+│  • Manages everything                      │
+│  • Customers can't enter                   │
+│                                            │
+└────────────────────────────────────────────┘
+```
+
+**Why separate?**
+- **Security**: Customers (frontend) can't mess with the kitchen
+- **Safety**: If a customer causes trouble, kitchen keeps working
+- **Specialization**: Each side does what it's good at
+
+**How they communicate:**
+1. **Commands**: Customer orders food (frontend calls Rust function)
+2. **Events**: Kitchen rings bell when order is ready (backend notifies frontend)
+3. **Data**: Food goes through window (data serialized and sent)
 
 ### The Three Communication Patterns
 
@@ -1454,10 +1508,11 @@ async function addHost(hostname: string, description: string) {
         const status = await invoke<string>("check_host_status", { hostname });
         console.log("Host status:", status);
     
-    alert("Host saved successfully!");
+    // Production: use showCustomDialog (covered in Chapter 5)
+    console.log("Host saved successfully!");
     
   } catch (error) {
-    alert(`Error: ${error}`);
+    console.error(`Error: ${error}`);
   }
 }
 ```

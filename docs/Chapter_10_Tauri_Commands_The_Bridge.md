@@ -859,7 +859,7 @@ async function deleteHost(hostname: string) {
         await loadHosts();
     } catch (error) {
         console.error('Failed to delete host:', error);
-        alert(`Failed to delete host: ${error}`);
+        // Production: use showCustomDialog or showNotification (see Chapter 5)
     }
 }
 ```

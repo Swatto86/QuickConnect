@@ -418,17 +418,24 @@ pub fn run() {
 
 ### Add Dependencies
 
+**What are dependencies?** Think of them as pre-built tools you can use. Instead of building a hammer from scratch, you go to the store (crates.io) and get one.
+
 Edit `src-tauri/Cargo.toml` to add required crates:
 
 ```toml
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-shell = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.6", features = ["v4"] }
-chrono = "0.4"
+tauri = { version = "2", features = [] }     # The Tauri framework itself
+tauri-plugin-shell = "2"                     # Run system commands
+serde = { version = "1", features = ["derive"] }  # Convert between Rust and JSON
+serde_json = "1.0"                           # Work with JSON format
+uuid = { version = "1.6", features = ["v4"] }     # Generate unique IDs (like "abc-123-def")
+chrono = "0.4"                               # Handle dates and times
 ```
+
+**What each does:**
+- **serde/serde_json**: Remember "serialization"? These pack/unpack data for sending between frontend and backend
+- **uuid**: Creates unique IDs. Like giving each task a Social Security Number - no two are the same
+- **chrono**: Handles timestamps. Like a clock that knows timezones and can format dates nicely
 
 ---
 
@@ -788,6 +795,7 @@ window.editTask = function(id: string) {
 
 // Delete task
 window.deleteTask = async function(id: string) {
+  // Note: Production apps use custom dialogs (see Chapter 5 showCustomDialog)
   const confirmed = confirm("Are you sure you want to delete this task?");
   if (!confirmed) return;
   
@@ -911,6 +919,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Clear completed button
   const clearBtn = document.getElementById("clear-completed");
   clearBtn?.addEventListener("click", async () => {
+    // Note: Production apps use showCustomDialog (covered in Chapter 5)
     const confirmed = confirm("Delete all completed tasks?");
     if (!confirmed) return;
     

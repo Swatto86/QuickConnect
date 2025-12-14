@@ -2356,6 +2356,7 @@ setTimeout(() => hideLoading(), 2000);
     });
 
     document.getElementById('submitBtn').addEventListener('click', () => {
+      // Demo only - use custom dialogs in production (see Chapter 5)
       alert('Setup complete! ✅');
     });
 

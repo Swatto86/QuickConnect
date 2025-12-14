@@ -949,17 +949,22 @@ async fn check_for_updates(app: tauri::AppHandle) -> Result<bool, String> {
 ```typescript
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { showCustomDialog } from './utils/ui';
 
 async function checkAndUpdate() {
     try {
         const update = await check();
         
         if (update?.available) {
-            const yes = confirm(
-                `Update to ${update.version} is available!\n\n` +
-                `Release notes: ${update.body}\n\n` +
-                'Download and install now?'
-            );
+            const yes = await showCustomDialog({
+                title: 'Update Available',
+                message:
+                    `Update to ${update.version} is available!\n\n` +
+                    `Release notes: ${update.body}\n\n` +
+                    'Download and install now?',
+                type: 'info',
+                showCancel: true
+            });
             
             if (yes) {
                 await update.downloadAndInstall();

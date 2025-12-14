@@ -39,8 +39,8 @@ Every Tauri application's windows are defined in `tauri.conf.json`. Let's examin
     "windows": [
       {
         "label": "login",
-        "width": 400,
-        "height": 370,
+        "width": 600,
+        "height": 500,
         "resizable": false,
         "title": "QuickConnect",
         "url": "index.html",
@@ -59,6 +59,7 @@ Every Tauri application's windows are defined in `tauri.conf.json`. Let's examin
         "minWidth": 800,
         "minHeight": 400,
         "resizable": true,
+        "maximized": true,
         "title": "QuickConnect",
         "url": "main.html",
         "transparent": false,
@@ -76,6 +77,7 @@ Every Tauri application's windows are defined in `tauri.conf.json`. Let's examin
         "minWidth": 600,
         "minHeight": 500,
         "resizable": true,
+        "maximized": true,
         "title": "QuickConnect",
         "url": "hosts.html",
         "transparent": false,
@@ -108,7 +110,8 @@ Every Tauri application's windows are defined in `tauri.conf.json`. Let's examin
         "minWidth": 500,
         "minHeight": 400,
         "resizable": true,
-        "title": "Error - QuickConnect",
+        "maximized": true,
+        "title": "Errors - QuickConnect",
         "url": "error.html",
         "transparent": false,
         "decorations": true,
@@ -882,8 +885,8 @@ Let's examine how QuickConnect orchestrates its five windows:
 ```json
 {
   "label": "login",
-  "width": 400,
-  "height": 370,
+  "width": 600,
+  "height": 500,
   "resizable": false,
   "visible": false,
   "transparent": true
@@ -891,7 +894,7 @@ Let's examine how QuickConnect orchestrates its five windows:
 ```
 
 **Key Features:**
-- Small, fixed size (authentication doesn't need much space)
+- Fixed size (600×500) to accommodate custom dialog modals
 - Transparent for modern UI effect
 - Hidden initially (shown in setup callback)
 - First window shown to user

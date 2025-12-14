@@ -101,6 +101,590 @@ For production Tauri apps (like QuickConnect), TypeScript is essential.
 
 ---
 
+## 5.1.5 Frontend Fundamentals Primer
+
+**⚠️ Skip this section if you already know:**
+- HTML/DOM manipulation
+- Async/await and Promises
+- Event listeners
+- Basic CSS selectors
+
+**Read this section if you're new to frontend development!**
+
+### 🌐 HTML and the DOM (Document Object Model)
+
+Think of a web page as a tree of elements:
+
+```html
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>My App</title>
+  </head>
+  <body>
+    <div id="app">
+      <h1>Welcome</h1>
+      <button id="myButton">Click Me</button>
+      <ul>
+        <li>Item 1</li>
+        <li>Item 2</li>
+      </ul>
+    </div>
+  </body>
+</html>
+```
+
+**Visual Representation:**
+
+```
+📄 document
+ └─ html
+     ├─ head
+     │   └─ title ("My App")
+     └─ body
+         └─ div (id="app")
+             ├─ h1 ("Welcome")
+             ├─ button (id="myButton")
+             └─ ul
+                 ├─ li ("Item 1")
+                 └─ li ("Item 2")
+```
+
+**Key Concepts:**
+
+1. **Elements** are the building blocks (div, button, input, etc.)
+2. **Attributes** provide extra info (`id="myButton"`, `class="primary"`)
+3. **Text Content** is what users see
+4. **The DOM** is the live representation in memory that JavaScript can manipulate
+
+### 🎯 Selecting Elements
+
+JavaScript/TypeScript can find and manipulate any element:
+
+```typescript
+// Get element by ID (fastest, most common)
+const button = document.getElementById('myButton');
+
+// Get element by CSS selector (flexible)
+const button = document.querySelector('#myButton');
+const allButtons = document.querySelectorAll('button');
+
+// Modern best practice for Tauri apps:
+const button = document.getElementById('myButton') as HTMLButtonElement;
+//                                                   ^^^ TypeScript type
+```
+
+**Common Selectors:**
+
+```typescript
+// By ID
+document.getElementById('searchInput')
+document.querySelector('#searchInput')  // Same thing
+
+// By class
+document.querySelector('.btn-primary')   // First match
+document.querySelectorAll('.btn-primary') // All matches
+
+// By tag name
+document.querySelector('button')
+document.querySelectorAll('div')
+
+// Complex selectors
+document.querySelector('div.container > button#submit')
+document.querySelector('input[type="text"]')
+```
+
+### 🎭 Manipulating Elements
+
+Once you have an element, you can change it:
+
+```typescript
+// Get element
+const heading = document.getElementById('title') as HTMLHeadingElement;
+
+// Change text content
+heading.textContent = 'New Title';
+
+// Change HTML content
+heading.innerHTML = '<strong>Bold Title</strong>';
+
+// Change attributes
+heading.setAttribute('class', 'large-title');
+heading.className = 'large-title'; // Same thing
+
+// Change styles
+heading.style.color = 'blue';
+heading.style.fontSize = '24px';
+
+// Show/hide elements
+heading.style.display = 'none';  // Hide
+heading.style.display = 'block'; // Show
+
+// Add/remove classes (best practice)
+heading.classList.add('active');
+heading.classList.remove('hidden');
+heading.classList.toggle('highlight');
+```
+
+**QuickConnect Example:**
+
+```typescript
+// Update the search result count
+const resultCount = document.getElementById('resultCount');
+if (resultCount) {
+  resultCount.textContent = `Found ${hosts.length} servers`;
+}
+
+// Show loading spinner
+const spinner = document.getElementById('loadingSpinner');
+if (spinner) {
+  spinner.classList.remove('hidden');
+}
+```
+
+### ⏰ Async/Await: Real-Life Analogy
+
+**The Restaurant Order:**
+
+Imagine you're at a restaurant:
+
+```
+┌─────────────────────────────────────────────────┐
+│         The Restaurant Analogy                  │
+├─────────────────────────────────────────────────┤
+│                                                 │
+│  Synchronous (Blocking):                       │
+│    You ───► Order food                         │
+│        │                                        │
+│        └──► ⏳ Wait here doing nothing          │
+│                (stare at kitchen)               │
+│        ┌──► Get food                           │
+│        │                                        │
+│        └──► Eat                                 │
+│                                                 │
+│  Asynchronous (Non-blocking):                  │
+│    You ───► Order food                         │
+│        │                                        │
+│        └──► Go check phone 📱                   │
+│             Read messages                       │
+│             Play game                           │
+│        ┌──► 🔔 "Your order is ready!"          │
+│        │                                        │
+│        └──► Get food and eat                   │
+│                                                 │
+└─────────────────────────────────────────────────┘
+```
+
+**In code:**
+
+```typescript
+// ❌ Synchronous (blocks everything)
+function getDataBlocking() {
+  // Imagine this takes 3 seconds
+  const data = fetchFromDisk(); // App freezes here!
+  console.log(data);
+  return data;
+}
+// User can't click anything while this runs
+
+// ✅ Asynchronous (doesn't block)
+async function getDataAsync() {
+  // This returns immediately, work happens in background
+  const data = await fetchFromDisk(); // App stays responsive!
+  console.log(data);
+  return data;
+}
+// User can still interact with the app
+```
+
+### 🎁 Promises: The IOU Note
+
+A **Promise** is like an IOU note from a function:
+
+```
+┌──────────────────────────────────────┐
+│           Promise States             │
+├──────────────────────────────────────┤
+│                                      │
+│  📋 Pending                          │
+│     "I'm working on it..."           │
+│     (Initial state)                  │
+│              │                       │
+│              ├─────────┬─────────┐   │
+│              ▼         ▼         │   │
+│  ✅ Fulfilled      ❌ Rejected   │   │
+│     "Here's your    "Sorry, it   │   │
+│      result!"        failed"     │   │
+│                                      │
+└──────────────────────────────────────┘
+```
+
+**Basic Promise Usage:**
+
+```typescript
+// Creating a promise
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+// Using promises: Old way (.then)
+delay(1000).then(() => {
+  console.log('1 second passed');
+});
+
+// Using promises: Modern way (async/await)
+async function waitAndLog() {
+  await delay(1000);
+  console.log('1 second passed');
+}
+```
+
+### 🌉 Async/Await in Tauri (The Bridge)
+
+Every Tauri command returns a Promise because it involves IPC (talking to Rust):
+
+```typescript
+// Calling Rust from JavaScript is ALWAYS async
+import { invoke } from '@tauri-apps/api/core';
+
+// ❌ Wrong: Trying to use it synchronously
+const hosts = invoke('get_hosts'); 
+// hosts is a Promise, not the actual data!
+
+// ✅ Correct: Wait for the promise
+async function loadHosts() {
+  const hosts = await invoke<Host[]>('get_hosts');
+  // Now hosts is the actual data
+  console.log(hosts);
+}
+
+// ✅ Also correct: Using .then
+invoke<Host[]>('get_hosts').then(hosts => {
+  console.log(hosts);
+});
+```
+
+**Real-World Comparison:**
+
+```typescript
+// Think of invoke() like ordering from Amazon:
+
+// 1. You place the order (invoke the command)
+const orderPromise = invoke('get_user_data');
+
+// 2. Amazon says "We'll get that to you" (Promise pending)
+// Your life continues, you can do other things
+
+// 3. Eventually, package arrives (Promise resolves)
+const data = await orderPromise;
+// Now you have your data!
+
+// If something goes wrong (Promise rejects)
+try {
+  const data = await invoke('get_user_data');
+} catch (error) {
+  console.error('Order failed:', error);
+}
+```
+
+### 🎪 Event Listeners: Reacting to User Actions
+
+Event listeners let your code respond when things happen:
+
+```typescript
+// Get the button
+const button = document.getElementById('submitBtn') as HTMLButtonElement;
+
+// Add a click listener
+button.addEventListener('click', () => {
+  console.log('Button was clicked!');
+});
+
+// With async operations
+button.addEventListener('click', async () => {
+  const result = await invoke('save_data');
+  console.log('Data saved:', result);
+});
+```
+
+**Common Events:**
+
+```typescript
+// Click events
+button.addEventListener('click', (event) => {
+  console.log('Clicked!', event);
+});
+
+// Input events (every keystroke)
+input.addEventListener('input', (event) => {
+  const target = event.target as HTMLInputElement;
+  console.log('Current value:', target.value);
+});
+
+// Form submission
+form.addEventListener('submit', async (event) => {
+  event.preventDefault(); // Stop page reload!
+  const formData = new FormData(event.target as HTMLFormElement);
+  await invoke('save_form', { data: Object.fromEntries(formData) });
+});
+
+// Keyboard events
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    console.log('Enter pressed!');
+  }
+});
+
+// Window events
+window.addEventListener('load', () => {
+  console.log('Page fully loaded');
+});
+```
+
+**QuickConnect Pattern:**
+
+```typescript
+// Search input with debouncing
+let searchTimeout: number;
+const searchInput = document.getElementById('searchInput') as HTMLInputElement;
+
+searchInput.addEventListener('input', (event) => {
+  const query = (event.target as HTMLInputElement).value;
+  
+  // Clear previous timeout
+  clearTimeout(searchTimeout);
+  
+  // Wait 300ms after user stops typing
+  searchTimeout = window.setTimeout(() => {
+    filterHosts(query);
+  }, 300);
+});
+```
+
+### 🎨 CSS Basics for Tauri Apps
+
+CSS (Cascading Style Sheets) makes things look good:
+
+**Basic Structure:**
+
+```css
+/* selector { property: value; } */
+
+#myButton {
+  background-color: blue;
+  color: white;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background-color: #007bff;
+}
+
+button:hover {
+  opacity: 0.8;
+}
+```
+
+**Common Selectors:**
+
+```css
+/* By ID */
+#searchInput { ... }
+
+/* By class */
+.container { ... }
+
+/* By tag */
+button { ... }
+
+/* Descendants */
+.container button { ... }
+
+/* Direct children */
+.container > button { ... }
+
+/* Multiple classes */
+.btn.btn-primary { ... }
+
+/* Pseudo-classes */
+button:hover { ... }
+button:active { ... }
+input:focus { ... }
+```
+
+**Tauri apps typically use:**
+- **Tailwind CSS** (utility classes): `class="flex items-center gap-2"`
+- **DaisyUI** (components): `class="btn btn-primary"`
+
+**QuickConnect uses DaisyUI:**
+
+```html
+<!-- No need to write CSS! Just use classes -->
+<button class="btn btn-primary">
+  Click Me
+</button>
+
+<div class="card bg-base-100 shadow-xl">
+  <div class="card-body">
+    <h2 class="card-title">Server Info</h2>
+    <p>Some content here</p>
+  </div>
+</div>
+```
+
+### 🔍 Browser DevTools: Your Best Friend
+
+**Opening DevTools:**
+- **Windows/Linux**: `F12` or `Ctrl+Shift+I`
+- **Mac**: `Cmd+Option+I`
+- **Tauri**: Same shortcuts work!
+
+**Console Tab:**
+
+```typescript
+// Logging messages
+console.log('Normal message');
+console.info('Info message');
+console.warn('Warning message');
+console.error('Error message');
+
+// Inspect objects
+console.log('User:', { name: 'Alice', age: 30 });
+
+// Measure performance
+console.time('operation');
+// ... do something
+console.timeEnd('operation'); // Prints: operation: 45.2ms
+```
+
+**Elements Tab:**
+- Inspect HTML structure
+- See CSS applied to elements
+- Edit HTML/CSS live
+- Find which styles are overriding others
+
+**Network Tab:**
+- Not really used in Tauri (no HTTP requests to backend)
+- But useful for checking external API calls
+
+**Console Errors:**
+
+When something breaks, DevTools shows:
+```
+Uncaught TypeError: Cannot read property 'value' of null
+    at main.ts:45
+```
+
+**This tells you:**
+- **What went wrong**: Tried to access `.value` on null
+- **Where**: Line 45 in main.ts
+- **Why**: Element doesn't exist (wrong ID, not loaded yet, etc.)
+
+### 🔧 Putting It All Together
+
+**A Complete Example:**
+
+```typescript
+// 1. Wait for page to load
+document.addEventListener('DOMContentLoaded', async () => {
+  
+  // 2. Get elements
+  const searchInput = document.getElementById('searchInput') as HTMLInputElement;
+  const resultsDiv = document.getElementById('results') as HTMLDivElement;
+  const loadingSpinner = document.getElementById('loading') as HTMLDivElement;
+  
+  // 3. Load initial data (async!)
+  try {
+    loadingSpinner.classList.remove('hidden');
+    const hosts = await invoke<Host[]>('get_all_hosts');
+    displayHosts(hosts);
+  } catch (error) {
+    console.error('Failed to load hosts:', error);
+    resultsDiv.textContent = 'Error loading data';
+  } finally {
+    loadingSpinner.classList.add('hidden');
+  }
+  
+  // 4. Add event listeners
+  searchInput.addEventListener('input', (event) => {
+    const query = (event.target as HTMLInputElement).value;
+    filterAndDisplay(query);
+  });
+});
+
+// Helper functions
+function displayHosts(hosts: Host[]) {
+  const resultsDiv = document.getElementById('results')!;
+  resultsDiv.innerHTML = hosts
+    .map(host => `
+      <div class="card">
+        <h3>${host.hostname}</h3>
+        <p>${host.description}</p>
+      </div>
+    `)
+    .join('');
+}
+
+function filterAndDisplay(query: string) {
+  // Filter logic here
+}
+```
+
+**Key Patterns:**
+
+1. ✅ Wait for `DOMContentLoaded` before accessing elements
+2. ✅ Use TypeScript type assertions (`as HTMLInputElement`)
+3. ✅ Always `await` Tauri invoke calls
+4. ✅ Handle errors with try/catch
+5. ✅ Use `classList` instead of directly changing `style`
+6. ✅ Use template literals for HTML generation
+
+### 📚 Quick Reference Card
+
+```typescript
+// === DOM Selection ===
+document.getElementById('id')
+document.querySelector('.class')
+document.querySelectorAll('button')
+
+// === DOM Manipulation ===
+element.textContent = 'text'
+element.innerHTML = '<b>html</b>'
+element.classList.add('class')
+element.classList.remove('class')
+element.classList.toggle('class')
+element.style.display = 'none'
+
+// === Events ===
+element.addEventListener('click', () => {})
+element.addEventListener('input', (e) => {})
+document.addEventListener('DOMContentLoaded', () => {})
+
+// === Async/Await ===
+async function doWork() {
+  const result = await someAsyncFunction();
+  return result;
+}
+
+// === Tauri Invoke ===
+import { invoke } from '@tauri-apps/api/core';
+const data = await invoke<Type>('command_name', { param: value });
+
+// === Error Handling ===
+try {
+  const result = await invoke('command');
+} catch (error) {
+  console.error('Failed:', error);
+}
+```
+
+---
+
 ## 5.2 Setting Up TypeScript in Tauri
 
 ### Project Configuration
@@ -1203,7 +1787,13 @@ window.editHost = async function(hostname: string) {
 };
 
 window.deleteHost = async function(hostname: string) {
-  const confirmed = confirm(`Delete host ${hostname}?`);
+  const confirmed = await showCustomDialog({
+    title: 'Delete Host',
+    message: `Delete host ${hostname}?`,
+    type: 'warning',
+    showCancel: true
+  });
+  
   if (!confirmed) return;
   
   try {
@@ -2881,7 +3471,7 @@ function renderHosts(hosts: Host[]) {
 
 ✅ **Testability**
 - Pure functions with predictable outputs
-- 321 tests across 4 utility modules
+- 660 tests across 9 test files
 - Property-based testing for validation
 - 80% code coverage enforced
 
@@ -2936,7 +3526,7 @@ function renderHosts(hosts: Host[]) {
 - `ui.ts` - Notifications and UI interactions (74 tests)
 - `errors.ts` - Error categorization and styling (85 tests)
 - `hosts.ts` - Filtering, sorting, and display logic (61 tests)
-- 321 tests ensure reliability across all modules
+- 660 tests ensure reliability across all modules
 
 ---
 

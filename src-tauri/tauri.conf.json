@@ -14,8 +14,8 @@
     "windows": [
       {
         "label": "login",
-        "width": 400,
-        "height": 370,
+        "width": 600,
+        "height": 500,
         "resizable": false,
         "title": "QuickConnect",
         "url": "index.html",

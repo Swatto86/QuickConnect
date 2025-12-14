@@ -650,50 +650,77 @@ pub async fn reset_application(app_handle: tauri::AppHandle) -> Result<String, S
 ```typescript
 // Typically called from a secret keyboard shortcut
 async function resetApplication() {
-  // Always confirm before resetting
-  const confirmed = confirm(
-    'This will delete ALL QuickConnect data including:\n\n' +
-    '• Global credentials\n' +
-    '• All RDP host credentials (TERMSRV/*)\n' +
-    '• All saved RDP connection files\n' +
-    '• All hosts\n' +
-    '• Recent connections\n\n' +
-    'This cannot be undone. Continue?'
-  );
+  // Import custom dialog utility
+  import { showCustomDialog } from './utils/ui';
+  
+  // Always confirm before resetting with styled custom dialog
+  const confirmed = await showCustomDialog({
+    title: '⚠️ WARNING: Application Reset ⚠️',
+    message: 'This will permanently delete:\n' +
+      '• All saved credentials\n' +
+      '• All RDP connection files\n' +
+      '• All saved hosts\n' +
+      '• Recent connection history\n\n' +
+      'This action CANNOT be undone!\n\n' +
+      'Are you sure you want to continue?',
+    type: 'confirm',
+    icon: 'warning',
+    confirmText: 'Continue',
+    cancelText: 'Cancel'
+  });
   
   if (!confirmed) return;
   
   // Second confirmation for safety
-  const doubleConfirmed = confirm(
-    'FINAL CONFIRMATION:\n\n' +
-    'This will COMPLETELY reset QuickConnect and permanently delete your data.\n\n' +
-    'Press OK to proceed with the reset, or Cancel to abort.'
-  );
+  const confirmedAgain = await showCustomDialog({
+    title: 'FINAL CONFIRMATION',
+    message: 'This will COMPLETELY reset QuickConnect and permanently delete your data.\n\n' +
+      'Click Confirm to proceed with the reset, or Cancel to abort.',
+    type: 'confirm',
+    icon: 'error',
+    confirmText: 'Reset Now',
+    cancelText: 'Cancel'
+  });
   
-  if (!doubleConfirmed) return;
+  if (!confirmedAgain) return;
   
   try {
     // Perform reset
     const report = await invoke<string>('reset_application');
     
-    // Show detailed report
-    alert(report);
+    // Show detailed report with success icon
+    await showCustomDialog({
+      title: 'Application Reset',
+      message: report,
+      type: 'alert',
+      icon: 'success'
+    });
 
     // Return to the initial credentials screen
     await invoke('show_login_window');
 
     // Optional restart
-    const shouldQuit = confirm(
-      'Reset complete!\n\n' +
-      'It is recommended to restart the application now.\n\n' +
-      'Do you want to quit the application?'
-    );
+    const shouldQuit = await showCustomDialog({
+      title: 'Reset Complete',
+      message: 'It is recommended to restart the application now.\n\n' +
+        'Do you want to quit the application?',
+      type: 'confirm',
+      icon: 'info',
+      confirmText: 'Quit Now',
+      cancelText: 'Continue'
+    });
+    
     if (shouldQuit) {
       await invoke('quit_app');
     }
     
   } catch (error) {
-    alert(`Reset failed: ${error}`);
+    await showCustomDialog({
+      title: 'Reset Failed',
+      message: 'Failed to reset application: ' + error,
+      type: 'alert',
+      icon: 'error'
+    });
   }
 }
 ```

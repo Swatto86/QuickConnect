@@ -2419,8 +2419,61 @@ export function clearForm(formId: string): void {
 }
 ```
 
+**Custom Dialog System:**
+
+QuickConnect replaces all browser `confirm()` and `alert()` calls with custom DaisyUI-themed dialogs for a consistent, professional appearance:
+
+**`showCustomDialog(options: CustomDialogOptions): Promise<boolean>`**
+
+```typescript
+export type DialogType = 'confirm' | 'alert';
+export type DialogIcon = 'warning' | 'info' | 'error' | 'success';
+
+export interface CustomDialogOptions {
+  title: string;
+  message: string;
+  type: DialogType;
+  icon?: DialogIcon;
+  confirmText?: string;
+  cancelText?: string;
+}
+
+// Confirmation dialog
+const confirmed = await showCustomDialog({
+  title: 'Delete Host',
+  message: 'Are you sure you want to delete this host?',
+  type: 'confirm',
+  icon: 'warning',
+  confirmText: 'Delete',
+  cancelText: 'Cancel'
+});
+
+if (confirmed) {
+  await invoke('delete_host', { hostname });
+}
+
+// Alert dialog
+await showCustomDialog({
+  title: 'Validation Error',
+  message: 'Hostname must not exceed 253 characters',
+  type: 'alert',
+  icon: 'error'
+});
+```
+
+**Features:**
+- DaisyUI-themed modals matching application style
+- Icons for different severity levels (warning, info, error, success)
+- ESC key support for dismissal
+- Smooth fade-in/fade-out animations
+- Proper button styling (red for dangerous actions, primary for normal)
+- Preserves line breaks in messages
+- Minimum width (400px) and maximum width (512px) for readability
+- No max-height restriction to prevent scrollbars
+- Focus management for keyboard accessibility
+
 **Test Coverage:**
-- `ui.test.ts`: 74 tests for core UI functions
+- `ui.test.ts`: 87 tests including 15 custom dialog tests
 - `ui-main.test.ts`, `ui-login.test.ts`, `ui-hosts.test.ts`: Integration tests for window-specific behavior
 
 ---

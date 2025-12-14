@@ -748,21 +748,45 @@ QuickConnect defines minimum and default window sizes in `tauri.conf.json`:
 {
   "windows": [
     {
+      "label": "login",
+      "width": 600,
+      "height": 500,
+      "resizable": false
+    },
+    {
       "label": "main",
       "title": "QuickConnect",
-      "width": 1000,
-      "height": 700,
+      "width": 800,
+      "height": 400,
       "minWidth": 800,
-      "minHeight": 600
+      "minHeight": 400,
+      "maximized": true
+    },
+    {
+      "label": "hosts",
+      "width": 800,
+      "height": 400,
+      "minWidth": 600,
+      "minHeight": 500,
+      "maximized": true
+    },
+    {
+      "label": "error",
+      "width": 700,
+      "height": 500,
+      "minWidth": 500,
+      "minHeight": 400,
+      "maximized": true
     }
   ]
 }
 ```
 
 This means:
-- Users can't make the window smaller than 800×600
-- Default size is 1000×700
-- Design should work well from 800px to 1920px+ width
+- Login window is fixed at 600×500 (sized to accommodate custom dialogs)
+- Main, hosts, and error windows open maximized for full-screen experience
+- Users can't make windows smaller than their minimum sizes
+- Design should work well from 600px to 1920px+ width
 
 ### Responsive Layout Patterns in QuickConnect
 

@@ -418,7 +418,7 @@ QuickConnect uses a distributed configuration approach for different types of se
 
 #### Configuration Versioning
 
-- **Current Version**: 1.2.0 (no migration needed yet)
+- **Current Version**: 1.2.1 (no migration needed yet)
 - **Future Migrations**: Handled via version detection in CSV/JSON files
 - **Backward Compatibility**: New fields added with optional/default values
 
@@ -788,7 +788,12 @@ npm run tauri build
 - ⏳ **UI/E2E automated testing** - Complete user workflows with Playwright/Tauri WebDriver
 - ⏳ **Integration tests with real artifacts** - Actual RDP files, real AD queries (requires test infrastructure)
 
-**Recent Improvements (v1.2.0+):**
+**Recent Improvements (v1.2.1):**
+- **Custom Dialog System**: Replaced all browser confirm()/alert() calls with DaisyUI-themed custom dialogs featuring icons, animations, and keyboard support
+- **Enhanced Notification Centering**: Improved banner positioning with better vertical centering (top-8/bottom-8) and enhanced styling
+- **15 New Dialog Tests**: Comprehensive test coverage for custom dialog functionality (660 total tests passing)
+
+**Previous Improvements (v1.2.0):**
 - **Structured Logging Migration**: Migrated to `tracing` ecosystem for enhanced observability with structured fields, thread tracking, and file/line precision
 - **CSV Writer Extraction**: Moved CSV writing from command layer to `core/csv_writer.rs` module with proper error handling and 3 comprehensive tests
 - **Error Handling Enhancement**: Eliminated last `unwrap_or_else` in production code with explicit `get_theme_or_default()` helper

@@ -1,6 +1,6 @@
 [package]
 name = "QuickConnect"
-version = "1.2.0"
+version = "1.2.1"
 description = "A fast and efficient RDP connection manager for Windows system administrators. Save, search, and connect to multiple Windows servers with secure credential storage."
 authors = ["Swatto"]
 edition = "2021"

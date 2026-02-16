@@ -4,18 +4,102 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  release:
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [windows-latest]
+  verify:
+    name: Verify
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
 
-    runs-on: ${{ matrix.platform }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Run verification
+        shell: pwsh
+        run: pwsh -File scripts/verify.ps1
+
+  create-release:
+    needs: verify
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create-release.outputs.result }}
+      release_body: ${{ steps.get-notes.outputs.notes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch tags with annotations
+        run: git fetch --tags --force
+
+      - name: Get release notes from tag
+        id: get-notes
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          
+          NOTES=$(git for-each-ref --format='%(contents)' "refs/tags/$TAG_NAME" 2>/dev/null || echo "")
+          
+          if [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ]; then
+            RAW_NOTES=$(git tag -l -n1000 "$TAG_NAME" 2>/dev/null || echo "")
+            if [ -n "$RAW_NOTES" ]; then
+              NOTES=$(echo "$RAW_NOTES" | sed "s/^${TAG_NAME}[[:space:]]*//")
+            fi
+          fi
+
+          if [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ]; then
+            NOTES=$(printf "Release %s\n\nSee the assets below to download and install this version." "$TAG_NAME")
+          fi
+
+          {
+            echo 'notes<<EOF'
+            echo "$NOTES"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
+      - name: Create draft release
+        id: create-release
+        uses: actions/github-script@v7
+        env:
+          TAG_NAME: ${{ steps.get-notes.outputs.tag_name }}
+          RELEASE_NOTES: ${{ steps.get-notes.outputs.notes }}
+        with:
+          script: |
+            const { TAG_NAME, RELEASE_NOTES } = process.env;
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: TAG_NAME,
+              name: `QuickConnect ${TAG_NAME}`,
+              body: RELEASE_NOTES,
+              draft: true,
+              prerelease: false
+            });
+            return release.data.id;
+
+  build-windows:
+    needs: create-release
+    runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,9 +107,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: '20'
 
-      - name: Install Rust stable
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
@@ -33,29 +117,67 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
-      - name: Install frontend dependencies
-        run: npm install
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Build frontend
-        run: npm run build
-
-      - name: Build Tauri app
-        run: npm run tauri build
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - name: Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          files: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
-          draft: false
-          prerelease: false
-          name: QuickConnect ${{ github.ref_name }}
-          body: |
-            ## QuickConnect ${{ github.ref_name }}
-            
-            Download the installer for Windows:
-            - **NSIS Installer** (.exe) - Recommended
-            - **MSI Installer** (.msi) - Alternative
-            
-            See the [README](https://github.com/Swatto86/QuickConnect/blob/main/README.md) for installation instructions.
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          includeUpdaterJson: true
+          updaterJsonKeepUniversal: true
+
+      - name: Generate SHA256 checksums
+        shell: pwsh
+        run: |
+          $artifacts = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -File -ErrorAction SilentlyContinue
+          if ($artifacts) {
+            $checksums = $artifacts | ForEach-Object {
+              $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower()
+              "$hash  $($_.Name)"
+            }
+            $checksums | Out-File -FilePath "SHA256SUMS.txt" -Encoding utf8
+            Write-Host "Generated checksums:"
+            Get-Content "SHA256SUMS.txt"
+          } else {
+            Write-Host "No artifacts found in bundle/nsis — checksums skipped"
+          }
+
+      - name: Upload checksums to release
+        if: hashFiles('SHA256SUMS.txt') != ''
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        with:
+          script: |
+            const fs = require('fs');
+            const data = fs.readFileSync('SHA256SUMS.txt');
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: parseInt(process.env.RELEASE_ID),
+              name: 'SHA256SUMS.txt',
+              data: data,
+            });
+
+  publish-release:
+    needs: [create-release, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: parseInt(process.env.RELEASE_ID),
+              draft: false
+            });
+            console.log(`Published release ${process.env.RELEASE_ID}`);

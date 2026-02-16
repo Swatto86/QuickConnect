@@ -37,10 +37,7 @@ function Invoke-Step([string]$Label, [scriptblock]$Action) {
     Write-Host ""
 }
 
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-if (Test-Path (Join-Path $PSScriptRoot '..' 'src-tauri')) {
-    $repoRoot = Split-Path -Parent $PSScriptRoot
-}
+$repoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $repoRoot
 
 try {

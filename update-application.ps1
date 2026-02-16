@@ -132,7 +132,7 @@ function Update-TauriConf {
     # Tauri 2.x: version is at root level, not under 'package'
     $json.version = $NewVersion
     
-    $jsonString = $json | ConvertTo-Json -Depth 10
+    $jsonString = $json | ConvertTo-Json -Depth 100
     Set-Content -Path $TauriConfPath -Value $jsonString -NoNewline
 }
 
